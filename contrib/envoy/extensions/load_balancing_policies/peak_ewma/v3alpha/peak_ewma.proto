@@ -1,0 +1,57 @@
+syntax = "proto3";
+
+package envoy.extensions.load_balancing_policies.peak_ewma.v3alpha;
+
+import "google/protobuf/duration.proto";
+import "xds/annotations/v3/status.proto";
+import "validate/validate.proto";
+
+option (xds.annotations.v3.file_status).work_in_progress = true;
+
+// [#protodoc-title: Peak EWMA Load Balancer Configuration]
+// Configuration for the Peak EWMA (Exponentially Weighted Moving Average) load balancing policy.
+//
+// This policy implements a latency-aware variant of the Power of Two Choices (P2C) algorithm.
+// It selects the best host from two randomly chosen candidates based on a cost function:
+// `Cost = RTT_peak_ewma * (active_requests + 1)`.
+//
+// The Peak EWMA algorithm is designed to:
+// - Automatically route traffic away from slow or overloaded hosts
+// - Adapt to changing host performance without manual configuration
+// - Provide low-latency request routing with O(1) host selection complexity
+// - Work effectively in heterogeneous environments with varying host capabilities
+//
+// RTT measurements are automatically collected from HTTP request timing and used to update
+// the EWMA for each host. This provides real-time performance feedback for routing decisions.
+//
+// Important: This load balancer only considers latency and load when selecting hosts. It does
+// not handle host health or error responses - these should be managed by Envoy's health checking
+// and outlier detection systems. Peak EWMA operates on the pool of healthy hosts as determined
+// by these other systems.
+//
+// [#extension: envoy.load_balancing_policies.peak_ewma]
+message PeakEwma {
+  option (xds.annotations.v3.message_status).work_in_progress = true;
+
+  // The decay time for the RTT EWMA calculation. This specifies the time window over which
+  // latency observations are considered relevant. After this duration, older measurements
+  // have exponentially decayed to half their original weight.
+  //
+  // The Peak EWMA algorithm uses this to calculate the EWMA time constant (tau):
+  // `tau = decay_time_nanos`, and the EWMA reaches its half-life after `tau * ln(2)`.
+  //
+  // This parameter is more intuitive than a raw smoothing factor as it directly relates
+  // to the time duration over which you want to observe latency trends.
+  //
+  // Typical values:
+  // - 5s: Quick adaptation, good for detecting rapid performance changes
+  // - 10s: Balanced responsiveness and stability (default, matches Finagle)
+  // - 30s: More stable, less sensitive to temporary spikes
+  // - 60s: Very stable, suitable for long-lived connections
+  //
+  // If not specified, defaults to 10 seconds (following Finagle's default).
+  google.protobuf.Duration decay_time = 1 [(validate.rules).duration = {
+    gt {nanos: 0}
+  }];
+
+}
