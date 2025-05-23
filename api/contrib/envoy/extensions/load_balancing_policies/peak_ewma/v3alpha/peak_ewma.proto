@@ -1,0 +1,40 @@
+syntax = "proto3";
+
+package envoy.extensions.load_balancing_policies.peak_ewma.v3alpha;
+
+import "google/protobuf/duration.proto";
+// Corrected import for status annotations
+import "xds/annotations/v3/status.proto"; // CHANGED FROM udpa/annotations/status.proto
+import "validate/validate.proto";
+
+// Corrected file-level option
+option (xds.annotations.v3.file_status).work_in_progress = true; // CHANGED FROM udpa.annotations.file_status
+
+// [#protodoc-title: Peak EWMA Load Balancer Configuration]
+// Configuration for the Peak EWMA (Exponentially Weighted Moving Average) load balancing policy.
+// This policy selects endpoints based on a cost function: `Cost = RTT_peak_ewma * (active_requests + 1)`.
+// It is designed to be sensitive to latency spikes by adjusting the RTT EWMA's responsiveness.
+// This load balancer operates on hosts not currently ejected by outlier detection.
+// [#extension: envoy.load_balancing_policies.peak_ewma]
+message PeakEwma {
+  // Corrected message-level option
+  option (xds.annotations.v3.message_status).work_in_progress = true; // CHANGED FROM udpa.annotations.message_status
+
+  // The smoothing factor for the RTT EWMA. This value determines how responsive the EWMA is to
+  // new RTT samples. A lower value makes the EWMA more sensitive to recent RTT changes,
+  // thereby emphasizing peak latencies.
+  // It must be a value greater than 0.0 and less than 1.0.
+  // For example, a value of 0.1 would give 10% weight to the new RTT sample and 90% to the
+  // existing EWMA.
+  double rtt_smoothing_factor = 1 [(validate.rules).double = {gt: 0.0, lt: 1.0}];
+
+  // The default RTT value to use for hosts that have not yet been measured or have no
+  // active requests. This ensures that new or temporarily idle hosts have a baseline cost.
+  // It's recommended to set this to a conservatively high estimate of RTT for your upstream
+  // services (e.g., 1000ms, but depends on the specific services).
+  // This field is required.
+  google.protobuf.Duration default_rtt = 2 [(validate.rules).duration = {
+    required: true,
+    gt {nanos: 0}
+  }];
+}
