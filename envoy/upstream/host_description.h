@@ -107,6 +107,16 @@ public:
   virtual absl::Status onOrcaLoadReport(const OrcaLoadReport& /*report*/) {
     return absl::OkStatus();
   }
+
+	/**
+   * Called when an RTT sample has been observed for the host this data is attached to.
+   * Load balancer-specific HostLbPolicyData implementations can override this
+   * to update their internal state.
+   * @param rtt the observed round trip time.
+   */
+  virtual void onHostRttReported(std::chrono::milliseconds /*rtt*/) {
+    // Default implementation is a no-op.
+  }
 };
 
 using HostLbPolicyDataPtr = std::unique_ptr<HostLbPolicyData>;

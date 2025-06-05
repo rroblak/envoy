@@ -228,6 +228,42 @@ void UpstreamRequest::cleanUp() {
   stream_info_.onRequestComplete();
   upstreamLog(AccessLog::AccessLogType::UpstreamEnd);
 
+	if (parent_.callbacks() && upstream_host_ && stream_info_.upstreamInfo()) {
+		// Use this UpstreamRequest's own stream_info_ for the timing of this specific attempt.
+		auto& current_attempt_stream_info = this->stream_info_;
+		auto& upstream_timing = current_attempt_stream_info.upstreamInfo()->upstreamTiming();
+
+		// Ensure onRequestComplete has populated upstream_rq_time_ for the current attempt's stream_info,
+		// or calculate from raw timing points if more direct.
+		// upstream_rq_time_ is usually calculated in StreamInfoImpl::onRequestComplete().
+		// If cleanUp() calls its own stream_info_.onRequestComplete(), this should be populated.
+		absl::optional<std::chrono::nanoseconds> rtt_ns = current_attempt_stream_info.timing().upstream_rq_time_;
+
+		if (!rtt_ns.has_value() && // Fallback if upstream_rq_time_ isn't populated yet for some reason
+				upstream_timing.last_upstream_rx_byte_received_.has_value() &&
+				upstream_timing.first_upstream_tx_byte_sent_.has_value()) {
+			rtt_ns = upstream_timing.last_upstream_rx_byte_received_.value() -
+							 upstream_timing.first_upstream_tx_byte_sent_.value();
+		}
+
+		if (rtt_ns.has_value() && rtt_ns.value().count() >= 0) {
+			std::chrono::milliseconds rtt_ms =
+					std::chrono::duration_cast<std::chrono::milliseconds>(rtt_ns.value());
+
+			OptRef<Upstream::LoadBalancerContext> lb_context =
+					parent_.callbacks()->loadBalancerContext(); // This is typically the Router::Filter instance
+			if (lb_context.has_value()) {
+				ENVOY_STREAM_LOG(debug, "UpstreamRequest::cleanUp recording RTT for host {}: {}ms",
+												 *parent_.callbacks(),
+												 upstream_host_->address()->asString(), rtt_ms.count());
+				// This will now call the overridden Router::Filter::recordHostObservedRtt
+				lb_context->recordHostObservedRtt(*upstream_host_, rtt_ms);
+			}
+		} else {
+			ENVOY_STREAM_LOG(debug, "UpstreamRequest::cleanUp: RTT not available or invalid for host {}",
+											 *parent_.callbacks(), upstream_host_->address()->asString());
+		}
+	}
   while (downstream_data_disabled_ != 0) {
     parent_.callbacks()->onDecoderFilterBelowWriteBufferLowWatermark();
     parent_.cluster()->trafficStats()->upstream_flow_control_drained_total_.inc();

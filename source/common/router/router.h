@@ -346,7 +346,13 @@ public:
   // Http::StreamDecoderFilter
   Http::FilterHeadersStatus decodeHeaders(Http::RequestHeaderMap& headers,
                                           bool end_stream) override;
-
+  /**
+   * Called when an RTT is observed for a host that this LbContext might have chosen.
+   * This implementation will find the corresponding Host and delegate the RTT reporting
+   * to its HostLbPolicyData object if it supports it.
+   */
+  void recordHostObservedRtt(const Upstream::HostDescription& host_desc,
+                             std::chrono::milliseconds rtt) override;
   bool continueDecodeHeaders(Upstream::ThreadLocalCluster* cluster, Http::RequestHeaderMap& headers,
                              bool end_stream, Upstream::HostConstSharedPtr&& host,
                              absl::optional<std::string> host_selection_detailsi = {});

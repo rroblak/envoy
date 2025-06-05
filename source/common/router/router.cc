@@ -14,6 +14,7 @@
 #include "envoy/runtime/runtime.h"
 #include "envoy/upstream/cluster_manager.h"
 #include "envoy/upstream/health_check_host_monitor.h"
+#include "envoy/upstream/host_description.h" // For HostLbPolicyData and HostDescription
 #include "envoy/upstream/upstream.h"
 
 #include "source/common/common/assert.h"
@@ -2287,6 +2288,67 @@ void Filter::maybeProcessOrcaLoadReport(const Envoy::Http::HeaderMap& headers_or
     if (!status.ok()) {
       ENVOY_STREAM_LOG(error, "Failed to invoke OrcaLoadReportCallbacks: {}", *callbacks_,
                        status.message());
+    }
+  }
+}
+
+void Filter::recordHostObservedRtt(const Upstream::HostDescription& host_desc,
+                                   std::chrono::milliseconds rtt) {
+  // This method is called when an upstream request associated with this router
+  // (which acted as the LbContext) has completed, and an RTT was observed.
+
+  if (!cluster_) { // cluster_ is Upstream::ClusterInfoConstSharedPtr, available in Filter
+    ENVOY_LOG(warn, "Router::Filter::recordHostObservedRtt called but cluster_ is null for host {}",
+              host_desc.address()->asString());
+    // Potentially log to stream_info_ as well if available and appropriate.
+    // callbacks_->streamInfo().setResponseCodeDetails("router_missing_cluster_for_rtt_report");
+    return;
+  }
+
+  ENVOY_STREAM_LOG(debug, "Router::Filter received RTT observation for host {}: {}ms", *callbacks_,
+                   host_desc.address()->asString(), rtt.count());
+
+  // The HostDescription itself has lbPolicyData(). We should use this directly
+  // if the HostDescription passed is the one associated with the LbPolicyData.
+  // This avoids iterating the cluster's hosts if possible.
+  // HostDescription is an interface; the concrete type (e.g., HostImpl) holds the LbPolicyData.
+  OptRef<Upstream::HostLbPolicyData> policy_data = host_desc.lbPolicyData();
+
+  if (policy_data.has_value()) {
+    ENVOY_STREAM_LOG(trace, "Router::Filter directly reporting RTT to HostLbPolicyData for host {}",
+                     *callbacks_, host_desc.address()->asString());
+    policy_data->onHostRttReported(rtt); // Generic call
+  } else {
+    // Fallback: If host_desc.lbPolicyData() isn't populated or usable directly (e.g., if it's a more abstract
+    // description not directly linked to the mutable HostLbPolicyData for some reason, or if the specific
+    // HostDescription instance passed doesn't have it), then we might need to find the Host in the cluster.
+    // This part depends on whether the `host_desc` parameter is guaranteed to be the *exact same instance*
+    // on which `setLbPolicyData` was called. Usually, it should be.
+    bool host_found_and_updated = false;
+    for (const auto& host_set : cluster_->prioritySet().hostSetsPerPriority()) {
+      if (host_set) {
+        for (const Upstream::HostSharedPtr& host_in_set : host_set->hosts()) {
+          if (host_in_set->address()->asString() == host_desc.address()->asString()) {
+            OptRef<Upstream::HostLbPolicyData> current_host_policy_data = host_in_set->lbPolicyData();
+            if (current_host_policy_data.has_value()) {
+              ENVOY_STREAM_LOG(debug, "Router::Filter reporting RTT to HostLbPolicyData for iterated host {}: {}ms",
+                                *callbacks_, host_in_set->address()->asString(), rtt.count());
+              current_host_policy_data->onHostRttReported(rtt);
+            } else {
+              ENVOY_STREAM_LOG(trace, "No HostLbPolicyData found for iterated host {} to report RTT",
+                               *callbacks_, host_in_set->address()->asString());
+            }
+            host_found_and_updated = true;
+            break; // Found host in this host_set
+          }
+        }
+      }
+      if (host_found_and_updated) break; // Found host in this priority
+    }
+    if (!host_found_and_updated) {
+      ENVOY_STREAM_LOG(warn,
+                       "Router::Filter::recordHostObservedRtt did not find host {} or its LbPolicyData in cluster {} to report RTT",
+                       *callbacks_, host_desc.address()->asString(), cluster_->name());
     }
   }
 }
