@@ -236,3 +236,48 @@ Dependencies are installed by the `ci/mac_ci_setup.sh` script, via [Homebrew](ht
 which is pre-installed on the [Azure Pipelines macOS image](https://github.com/actions/virtual-environments/blob/main/images/macos/macos-10.15-Readme.md).
 The dependencies are cached and re-installed on every build. The `ci/mac_ci_steps.sh` script executes the specific commands that
 build and test Envoy. Note that the full version of Xcode (not just Command Line Tools) is required.
+
+## Local Development on Apple Silicon (M-series) Macs using Docker
+
+Building Envoy within a Docker container on an Apple Silicon (aarch64) Mac
+requires a specific Bazel configuration to bypass toolchain auto-detection
+scripts that can fail in this environment. The key is to explicitly select the
+pre-configured `aarch64` Clang toolchain.
+
+This process has been verified on macOS Sequoia with Docker Desktop 4.x.
+
+### Build Command
+
+To build the Envoy static binary with contrib extensions, run the following
+command from the root of the repository. It invokes the standard Envoy Docker
+script but passes a specific `--config` flag to the inner `bazel` command.
+
+```bash
+./ci/run_envoy_docker.sh 'bazel build --config=rbe-toolchain-arm64-clang-libc++ -c opt //contrib/exe:envoy-static'
+```
+
+For the first build, it is highly recommended to start with a clean state:
+
+```bash
+./ci/run_envoy_docker.sh 'bazel clean --expunge'
+```
+
+### Performance on macOS
+
+To avoid recompiling from scratch on every run, you should use a persistent
+Docker volume for the Bazel cache. This significantly improves performance by
+working around filesystem inconsistencies on Docker for Mac.
+
+Create the volume once:
+
+```bash
+docker volume create envoy_bazel_cache
+```
+
+Then, set the `ENVOY_DOCKER_BUILD_DIR` environment variable before running your
+build:
+
+```bash
+ENVOY_DOCKER_BUILD_DIR=envoy_bazel_cache ./ci/run_envoy_docker.sh 'bazel build --config=rbe-toolchain-arm64-clang-libc++ -c opt //contrib/exe:envoy-static'
+```
+
