@@ -1,6 +1,7 @@
 #include "source/extensions/load_balancing_policies/peak_ewma/peak_ewma_lb.h"
 
 #include <limits>
+#include <tuple>
 
 #include "envoy/upstream/upstream.h"
 
@@ -98,8 +99,10 @@ double PeakEwmaLoadBalancer::getHostCost(const Upstream::Host& host) const {
     return current_cost;
 }
 
-Upstream::HostSelectionResponse
-PeakEwmaLoadBalancer::chooseHost(Upstream::LoadBalancerContext* context) {
+// *** MODIFICATION START ***
+// Helper function to perform the P2C host selection.
+std::tuple<Upstream::HostConstSharedPtr, Upstream::HostConstSharedPtr>
+PeakEwmaLoadBalancer::p2cPick(Upstream::LoadBalancerContext* context, bool peeking) {
   const Upstream::HostSet* current_host_set = nullptr;
 
   const auto& host_sets = priority_set_.hostSetsPerPriority();
@@ -115,30 +118,42 @@ PeakEwmaLoadBalancer::chooseHost(Upstream::LoadBalancerContext* context) {
   }
 
   if (!current_host_set) {
-    return Upstream::HostSelectionResponse{nullptr};
+    return {nullptr, nullptr};
   }
   
   const auto& hosts_to_consider = current_host_set->healthyHosts();
-  if (hosts_to_consider.empty()) {
-    return Upstream::HostSelectionResponse{nullptr};
-  }
-
-  // If we have only one host, no need for P2C.
-  if (hosts_to_consider.size() == 1) {
-    // A host is selectable if there is no context or the context doesn't want to select another host.
-    const bool h_selectable = !context || !context->shouldSelectAnotherHost(*hosts_to_consider[0]);
-    return Upstream::HostSelectionResponse{h_selectable ? hosts_to_consider[0] : nullptr};
+  if (hosts_to_consider.size() < 2) {
+      if (hosts_to_consider.size() == 1 && !peeking) {
+          // In the case of a single host, we can still "choose" it. Peeking makes no sense.
+          const bool h_selectable = !context || !context->shouldSelectAnotherHost(*hosts_to_consider[0]);
+          return {h_selectable ? hosts_to_consider[0] : nullptr, nullptr};
+      }
+      return {nullptr, nullptr};
   }
 
   // P2C: Pick two distinct random hosts.
-  // *** MODIFICATION START ***
-  // Use the base class's random() method with peeking disabled. This ensures that if
-  // peekAnotherHost() was called, we will retrieve the same random numbers it generated.
-  const uint64_t i1 = random(false) % hosts_to_consider.size();
-  const uint64_t i2 = (i1 + 1 + random(false) % (hosts_to_consider.size() - 1)) % hosts_to_consider.size();
-  // *** MODIFICATION END ***
-  Upstream::HostConstSharedPtr h1 = hosts_to_consider[i1];
-  Upstream::HostConstSharedPtr h2 = hosts_to_consider[i2];
+  const uint64_t i1 = random(peeking) % hosts_to_consider.size();
+  const uint64_t i2 = (i1 + 1 + random(peeking) % (hosts_to_consider.size() - 1)) % hosts_to_consider.size();
+  
+  return {hosts_to_consider[i1], hosts_to_consider[i2]};
+}
+// *** MODIFICATION END ***
+
+
+Upstream::HostSelectionResponse
+PeakEwmaLoadBalancer::chooseHost(Upstream::LoadBalancerContext* context) {
+  auto [h1, h2] = p2cPick(context, false);
+
+  if (h1 == nullptr) {
+      // This can happen if there are no hosts, or only one host which was not selectable.
+      // If there was one host and it was selectable, it would have been returned by p2cPick.
+      return Upstream::HostSelectionResponse{nullptr};
+  }
+  
+  if (h2 == nullptr) {
+      // This case means there was only one host and it was selectable.
+      return Upstream::HostSelectionResponse{h1};
+  }
 
   // Check if the context allows selection of these hosts. `shouldSelectAnotherHost` returns
   // true if we should *reject* the host, so we negate the result.
@@ -164,39 +179,12 @@ PeakEwmaLoadBalancer::chooseHost(Upstream::LoadBalancerContext* context) {
 
 Upstream::HostConstSharedPtr
 PeakEwmaLoadBalancer::peekAnotherHost(Upstream::LoadBalancerContext* context) {
-  // *** MODIFICATION START ***
-  // This is a full implementation of peekAnotherHost for pre-connecting.
-  const Upstream::HostSet* current_host_set = nullptr;
+  auto [h1, h2] = p2cPick(context, true);
 
-  const auto& host_sets = priority_set_.hostSetsPerPriority();
-  if (!host_sets.empty()) {
-    current_host_set = host_sets[0].get();
+  if (h1 == nullptr || h2 == nullptr) {
+      // Peeking requires two hosts to choose between.
+      return nullptr;
   }
-
-  if (local_priority_set_ != nullptr) {
-    const auto& local_host_sets = local_priority_set_->hostSetsPerPriority();
-    if (!local_host_sets.empty()) {
-      current_host_set = local_host_sets[0].get();
-    }
-  }
-
-  if (!current_host_set) {
-    return nullptr;
-  }
-
-  const auto& hosts_to_consider = current_host_set->healthyHosts();
-  // We need at least two hosts to peek at the "other" one.
-  if (hosts_to_consider.size() < 2) {
-    return nullptr;
-  }
-
-  // P2C: Pick two distinct random hosts. This must use random(true) to generate and
-  // stash the random values so that the subsequent call to chooseHost() will see the same hosts.
-  const uint64_t i1 = random(true) % hosts_to_consider.size();
-  const uint64_t i2 =
-      (i1 + 1 + random(true) % (hosts_to_consider.size() - 1)) % hosts_to_consider.size();
-  Upstream::HostConstSharedPtr h1 = hosts_to_consider[i1];
-  Upstream::HostConstSharedPtr h2 = hosts_to_consider[i2];
 
   // Check if the context allows selection of these hosts.
   const bool h1_selectable = !context || !context->shouldSelectAnotherHost(*h1);
@@ -214,7 +202,6 @@ PeakEwmaLoadBalancer::peekAnotherHost(Upstream::LoadBalancerContext* context) {
 
   // If only one or neither of the hosts is selectable, there's no viable "other" host to peek.
   return nullptr;
-  // *** MODIFICATION END ***
 }
 
 } // namespace PeakEwma

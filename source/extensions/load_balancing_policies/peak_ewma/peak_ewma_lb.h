@@ -60,6 +60,7 @@ private:
   void initializeHostStats(const Upstream::HostSharedPtr& host);
   void onHostAdded(const Upstream::HostSharedPtr& host);
   double getHostCost(const Upstream::Host& host) const;
+  std::tuple<Upstream::HostConstSharedPtr, Upstream::HostConstSharedPtr> p2cPick(Upstream::LoadBalancerContext* context, bool peeking);
 
   TimeSource& time_source_;
   // This member is added to hold the local priority set.
