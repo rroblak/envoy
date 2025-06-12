@@ -131,8 +131,12 @@ PeakEwmaLoadBalancer::chooseHost(Upstream::LoadBalancerContext* context) {
   }
 
   // P2C: Pick two distinct random hosts.
-  const uint64_t i1 = random_.random() % hosts_to_consider.size();
-  const uint64_t i2 = (i1 + 1 + random_.random() % (hosts_to_consider.size() - 1)) % hosts_to_consider.size();
+  // *** MODIFICATION START ***
+  // Use the base class's random() method with peeking disabled. This ensures that if
+  // peekAnotherHost() was called, we will retrieve the same random numbers it generated.
+  const uint64_t i1 = random(false) % hosts_to_consider.size();
+  const uint64_t i2 = (i1 + 1 + random(false) % (hosts_to_consider.size() - 1)) % hosts_to_consider.size();
+  // *** MODIFICATION END ***
   Upstream::HostConstSharedPtr h1 = hosts_to_consider[i1];
   Upstream::HostConstSharedPtr h2 = hosts_to_consider[i2];
 
@@ -159,9 +163,58 @@ PeakEwmaLoadBalancer::chooseHost(Upstream::LoadBalancerContext* context) {
 }
 
 Upstream::HostConstSharedPtr
-PeakEwmaLoadBalancer::peekAnotherHost(Upstream::LoadBalancerContext* /*context*/) {
-  // P2C could also be implemented here, but for now, we leave it as is.
+PeakEwmaLoadBalancer::peekAnotherHost(Upstream::LoadBalancerContext* context) {
+  // *** MODIFICATION START ***
+  // This is a full implementation of peekAnotherHost for pre-connecting.
+  const Upstream::HostSet* current_host_set = nullptr;
+
+  const auto& host_sets = priority_set_.hostSetsPerPriority();
+  if (!host_sets.empty()) {
+    current_host_set = host_sets[0].get();
+  }
+
+  if (local_priority_set_ != nullptr) {
+    const auto& local_host_sets = local_priority_set_->hostSetsPerPriority();
+    if (!local_host_sets.empty()) {
+      current_host_set = local_host_sets[0].get();
+    }
+  }
+
+  if (!current_host_set) {
+    return nullptr;
+  }
+
+  const auto& hosts_to_consider = current_host_set->healthyHosts();
+  // We need at least two hosts to peek at the "other" one.
+  if (hosts_to_consider.size() < 2) {
+    return nullptr;
+  }
+
+  // P2C: Pick two distinct random hosts. This must use random(true) to generate and
+  // stash the random values so that the subsequent call to chooseHost() will see the same hosts.
+  const uint64_t i1 = random(true) % hosts_to_consider.size();
+  const uint64_t i2 =
+      (i1 + 1 + random(true) % (hosts_to_consider.size() - 1)) % hosts_to_consider.size();
+  Upstream::HostConstSharedPtr h1 = hosts_to_consider[i1];
+  Upstream::HostConstSharedPtr h2 = hosts_to_consider[i2];
+
+  // Check if the context allows selection of these hosts.
+  const bool h1_selectable = !context || !context->shouldSelectAnotherHost(*h1);
+  const bool h2_selectable = !context || !context->shouldSelectAnotherHost(*h2);
+
+  // Get the cost for each host.
+  const double cost1 = getHostCost(*h1);
+  const double cost2 = getHostCost(*h2);
+
+  // The peeked host should be the host that would *not* have been chosen by chooseHost.
+  // This provides a logical alternative for pre-connection.
+  if (h1_selectable && h2_selectable) {
+    return (cost1 < cost2) ? h2 : h1;
+  }
+
+  // If only one or neither of the hosts is selectable, there's no viable "other" host to peek.
   return nullptr;
+  // *** MODIFICATION END ***
 }
 
 } // namespace PeakEwma
