@@ -26,13 +26,13 @@ public:
 
   double getEwmaRttMs() const { return rtt_ewma_.value(); }
 
-  // FIX: The method is renamed to match the call site in peak_ewma_filter.cc
   void recordRttSample(std::chrono::milliseconds rtt);
 
   void setComputedCostStat(double cost) { cost_stat_.set(static_cast<uint64_t>(cost)); }
 
 private:
   EwmaCalculator rtt_ewma_;
+  const double default_rtt_ms_;
   Stats::Gauge& cost_stat_;
 };
 
@@ -60,7 +60,8 @@ private:
   void initializeHostStats(const Upstream::HostSharedPtr& host);
   void onHostAdded(const Upstream::HostSharedPtr& host);
   double getHostCost(const Upstream::Host& host) const;
-  std::tuple<Upstream::HostConstSharedPtr, Upstream::HostConstSharedPtr> p2cPick(Upstream::LoadBalancerContext* context, bool peeking);
+  std::tuple<Upstream::HostConstSharedPtr, Upstream::HostConstSharedPtr>
+  p2cPick(Upstream::LoadBalancerContext* context, bool peeking);
 
   TimeSource& time_source_;
   // This member is added to hold the local priority set.

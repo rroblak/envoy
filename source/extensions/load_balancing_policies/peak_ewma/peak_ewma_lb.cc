@@ -18,14 +18,21 @@ namespace PeakEwma {
 PeakEwmaHostStats::PeakEwmaHostStats(double smoothing_factor, double default_rtt,
                                      TimeSource& /*time_source*/, // time_source is currently unused
                                      Stats::Scope& scope, const Upstream::Host& host)
-    : rtt_ewma_(smoothing_factor, default_rtt),
+    : rtt_ewma_(smoothing_factor, default_rtt), default_rtt_ms_(default_rtt),
       cost_stat_(Stats::Utility::gaugeFromElements(
           scope, {Stats::DynamicName(host.address()->asString()), Stats::DynamicName("peak_ewma_cost")},
           Stats::Gauge::ImportMode::NeverImport)) {}
 
 void PeakEwmaHostStats::recordRttSample(std::chrono::milliseconds rtt) {
-  // We insert the RTT value in milliseconds into the EWMA calculator.
-  rtt_ewma_.insert(static_cast<double>(rtt.count()));
+  const double rtt_ms = static_cast<double>(rtt.count());
+  // This is the "peak" check. If the new RTT is significantly higher than the
+  // current average, we suspect an anomaly and reset the EWMA to the default.
+  // This allows the LB to react quickly to a host that has suddenly become slow.
+  if (rtt_ms > rtt_ewma_.value()) {
+    rtt_ewma_.reset(default_rtt_ms_);
+  } else {
+    rtt_ewma_.insert(rtt_ms);
+  }
 }
 
 // This constructor now matches the declaration in the updated peak_ewma_lb.h
@@ -72,6 +79,7 @@ PeakEwmaLoadBalancer::PeakEwmaLoadBalancer(
 
 void PeakEwmaLoadBalancer::initializeHostStats(const Upstream::HostSharedPtr& host) {
   if (!host->typedLbPolicyData<PeakEwmaHostStats>().has_value()) {
+    // Pass the default RTT from the main LB config to the host-local stats object.
     host->setLbPolicyData(std::make_unique<PeakEwmaHostStats>(
         smoothing_factor_, default_rtt_ms_, time_source_, host->cluster().statsScope(), *host));
   }
@@ -99,7 +107,6 @@ double PeakEwmaLoadBalancer::getHostCost(const Upstream::Host& host) const {
     return current_cost;
 }
 
-// *** MODIFICATION START ***
 // Helper function to perform the P2C host selection.
 std::tuple<Upstream::HostConstSharedPtr, Upstream::HostConstSharedPtr>
 PeakEwmaLoadBalancer::p2cPick(Upstream::LoadBalancerContext* context, bool peeking) {
@@ -120,7 +127,7 @@ PeakEwmaLoadBalancer::p2cPick(Upstream::LoadBalancerContext* context, bool peeki
   if (!current_host_set) {
     return {nullptr, nullptr};
   }
-  
+ 
   const auto& hosts_to_consider = current_host_set->healthyHosts();
   if (hosts_to_consider.size() < 2) {
       if (hosts_to_consider.size() == 1 && !peeking) {
@@ -132,13 +139,11 @@ PeakEwmaLoadBalancer::p2cPick(Upstream::LoadBalancerContext* context, bool peeki
   }
 
   // P2C: Pick two distinct random hosts.
-  const uint64_t i1 = random(peeking) % hosts_to_consider.size();
-  const uint64_t i2 = (i1 + 1 + random(peeking) % (hosts_to_consider.size() - 1)) % hosts_to_consider.size();
-  
+  const uint64_t i1 = random_.random() % hosts_to_consider.size();
+  const uint64_t i2 = (i1 + 1 + random_.random() % (hosts_to_consider.size() - 1)) % hosts_to_consider.size();
+ 
   return {hosts_to_consider[i1], hosts_to_consider[i2]};
 }
-// *** MODIFICATION END ***
-
 
 Upstream::HostSelectionResponse
 PeakEwmaLoadBalancer::chooseHost(Upstream::LoadBalancerContext* context) {
@@ -149,7 +154,7 @@ PeakEwmaLoadBalancer::chooseHost(Upstream::LoadBalancerContext* context) {
       // If there was one host and it was selectable, it would have been returned by p2cPick.
       return Upstream::HostSelectionResponse{nullptr};
   }
-  
+ 
   if (h2 == nullptr) {
       // This case means there was only one host and it was selectable.
       return Upstream::HostSelectionResponse{h1};
@@ -172,7 +177,7 @@ PeakEwmaLoadBalancer::chooseHost(Upstream::LoadBalancerContext* context) {
   } else if (h2_selectable) {
     selected_host = h2;
   }
-  
+ 
   // If neither host is selectable, selected_host will be nullptr.
   return Upstream::HostSelectionResponse{selected_host};
 }

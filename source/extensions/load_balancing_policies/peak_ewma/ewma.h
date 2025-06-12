@@ -1,6 +1,6 @@
 #pragma once
 
-#include <atomic> // <-- ADDED
+#include <atomic>
 #include <cmath>
 
 #include "source/common/common/assert.h"
@@ -18,10 +18,10 @@ namespace PeakEwma {
 class EwmaCalculator {
 public:
   /**
-    * Constructor for EWMA.
-    * @param smoothing_factor The weight given to new samples. Must be (0.0, 1.0).
-    * @param initial_value The initial value of the EWMA.
-    */
+   * Constructor for EWMA.
+   * @param smoothing_factor The weight given to new samples. Must be (0.0, 1.0).
+   * @param initial_value The initial value of the EWMA.
+   */
   EwmaCalculator(double smoothing_factor, double initial_value)
       : smoothing_factor_(smoothing_factor), ewma_value_(initial_value) {
     ASSERT(smoothing_factor > 0.0 && smoothing_factor < 1.0, "Smoothing factor out of range");
@@ -29,9 +29,9 @@ public:
   }
 
   /**
-    * Inserts a new sample into the EWMA in a thread-safe manner.
-    * @param sample The new sample value.
-    */
+   * Inserts a new sample into the EWMA in a thread-safe manner.
+   * @param sample The new sample value.
+   */
   void insert(double sample) {
     ASSERT(!std::isnan(sample), "EWMA sample cannot be NaN");
     // Use a compare-exchange loop for a thread-safe read-modify-write operation.
@@ -45,8 +45,17 @@ public:
   }
 
   /**
-    * @return The current EWMA value, read atomically.
-    */
+   * Resets the EWMA to a specific value.
+   * @param value The value to reset to.
+   */
+  void reset(double value) {
+    ASSERT(!std::isnan(value), "EWMA reset value cannot be NaN");
+    ewma_value_.store(value, std::memory_order_release);
+  }
+
+  /**
+   * @return The current EWMA value, read atomically.
+   */
   double value() const {
     // A relaxed memory order is sufficient as we only need atomicity for this read,
     // not synchronization with other memory operations.
