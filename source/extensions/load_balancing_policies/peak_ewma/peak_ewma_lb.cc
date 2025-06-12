@@ -5,7 +5,7 @@
 
 #include "envoy/upstream/upstream.h"
 
-#include "source/common/common/assert.h"
+#include "source/common/common/assert.hh"
 #include "source/common/protobuf/utility.h"
 #include "source/common/stats/utility.h"
 
@@ -23,6 +23,19 @@ PeakEwmaHostStats::PeakEwmaHostStats(double smoothing_factor, double default_rtt
           scope, {Stats::DynamicName(host.address()->asString()), Stats::DynamicName("peak_ewma_cost")},
           Stats::Gauge::ImportMode::NeverImport)) {}
 
+// CONCURRENCY NOTE: This method is a "check-then-act" operation that is not fully
+// atomic, but is still thread-safe and correct in this context.
+//
+// The underlying `rtt_ewma_` uses `std::atomic`, so all individual reads (`.value()`)
+// and writes (`.reset()`, `.insert()`) are atomic, preventing data corruption.
+//
+// A race condition can occur where one thread reads the current EWMA, a second
+// thread updates it, and then the first thread acts on the old value. This is
+// acceptable because we want to be pessimistic. If any thread observes a high
+// latency "peak", we want its subsequent `reset()` to take precedence over any
+// concurrent `insert()` operations that might be processing a "good" latency
+// sample. This ensures the load balancer reacts aggressively to signs of an
+// unhealthy host.
 void PeakEwmaHostStats::recordRttSample(std::chrono::milliseconds rtt) {
   const double rtt_ms = static_cast<double>(rtt.count());
   // This is the "peak" check. If the new RTT is significantly higher than the
