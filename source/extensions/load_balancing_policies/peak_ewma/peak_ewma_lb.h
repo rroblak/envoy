@@ -59,6 +59,7 @@ private:
 
   void initializeHostStats(const Upstream::HostSharedPtr& host);
   void onHostAdded(const Upstream::HostSharedPtr& host);
+  double getHostCost(const Upstream::Host& host) const;
 
   TimeSource& time_source_;
   // This member is added to hold the local priority set.

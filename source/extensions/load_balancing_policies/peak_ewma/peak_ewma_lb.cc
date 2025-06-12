@@ -6,7 +6,7 @@
 
 #include "source/common/common/assert.h"
 #include "source/common/protobuf/utility.h"
-#include "source/common/stats/utility.h" // Add this include for Stats::Utility
+#include "source/common/stats/utility.h"
 
 namespace Envoy {
 namespace Extensions {
@@ -18,7 +18,6 @@ PeakEwmaHostStats::PeakEwmaHostStats(double smoothing_factor, double default_rtt
                                      TimeSource& /*time_source*/, // time_source is currently unused
                                      Stats::Scope& scope, const Upstream::Host& host)
     : rtt_ewma_(smoothing_factor, default_rtt),
-      // FIX: Call gaugeFromElements from the Stats::Utility namespace and add the import mode.
       cost_stat_(Stats::Utility::gaugeFromElements(
           scope, {Stats::DynamicName(host.address()->asString()), Stats::DynamicName("peak_ewma_cost")},
           Stats::Gauge::ImportMode::NeverImport)) {}
@@ -81,8 +80,26 @@ void PeakEwmaLoadBalancer::onHostAdded(const Upstream::HostSharedPtr& host) {
   initializeHostStats(host);
 }
 
+// Helper function to compute the cost of a given host.
+double PeakEwmaLoadBalancer::getHostCost(const Upstream::Host& host) const {
+    auto host_stats_opt = host.typedLbPolicyData<PeakEwmaHostStats>();
+    ASSERT(host_stats_opt.has_value(), "PeakEwmaHostStats not found on host. Initialization error.");
+    if (!host_stats_opt.has_value()) {
+      // Should not happen due to the ASSERT, but return max cost as a fallback.
+      return std::numeric_limits<double>::max();
+    }
+    PeakEwmaHostStats& host_stats = host_stats_opt.ref();
+
+    double rtt_peak_ewma_ms = host_stats.getEwmaRttMs();
+    uint64_t active_requests = host.stats().rq_active_.value();
+    double current_cost = rtt_peak_ewma_ms * (static_cast<double>(active_requests) + 1.0);
+    host_stats.setComputedCostStat(current_cost);
+
+    return current_cost;
+}
+
 Upstream::HostSelectionResponse
-PeakEwmaLoadBalancer::chooseHost(Upstream::LoadBalancerContext* /*context*/) {
+PeakEwmaLoadBalancer::chooseHost(Upstream::LoadBalancerContext* context) {
   const Upstream::HostSet* current_host_set = nullptr;
 
   const auto& host_sets = priority_set_.hostSetsPerPriority();
@@ -106,37 +123,44 @@ PeakEwmaLoadBalancer::chooseHost(Upstream::LoadBalancerContext* /*context*/) {
     return Upstream::HostSelectionResponse{nullptr};
   }
 
-  Upstream::HostConstSharedPtr selected_host = nullptr;
-  double min_cost = std::numeric_limits<double>::max();
-
-  for (const auto& host : hosts_to_consider) {
-    auto host_stats_opt = host->typedLbPolicyData<PeakEwmaHostStats>();
-    ASSERT(host_stats_opt.has_value(), "PeakEwmaHostStats not found on host. Initialization error.");
-    if (!host_stats_opt.has_value()) {
-      continue;
-    }
-    PeakEwmaHostStats& host_stats = host_stats_opt.ref();
-
-    double rtt_peak_ewma_ms = host_stats.getEwmaRttMs();
-    uint64_t active_requests = host->stats().rq_active_.value();
-    double current_cost = rtt_peak_ewma_ms * (static_cast<double>(active_requests) + 1.0);
-    host_stats.setComputedCostStat(current_cost);
-
-    if (current_cost < min_cost) {
-      min_cost = current_cost;
-      selected_host = host;
-    } else if (current_cost == min_cost) {
-      if (selected_host == nullptr || (random_.random() % 2 == 0)) {
-        selected_host = host;
-      }
-    }
+  // If we have only one host, no need for P2C.
+  if (hosts_to_consider.size() == 1) {
+    // A host is selectable if there is no context or the context doesn't want to select another host.
+    const bool h_selectable = !context || !context->shouldSelectAnotherHost(*hosts_to_consider[0]);
+    return Upstream::HostSelectionResponse{h_selectable ? hosts_to_consider[0] : nullptr};
   }
 
+  // P2C: Pick two distinct random hosts.
+  const uint64_t i1 = random_.random() % hosts_to_consider.size();
+  const uint64_t i2 = (i1 + 1 + random_.random() % (hosts_to_consider.size() - 1)) % hosts_to_consider.size();
+  Upstream::HostConstSharedPtr h1 = hosts_to_consider[i1];
+  Upstream::HostConstSharedPtr h2 = hosts_to_consider[i2];
+
+  // Check if the context allows selection of these hosts. `shouldSelectAnotherHost` returns
+  // true if we should *reject* the host, so we negate the result.
+  const bool h1_selectable = !context || !context->shouldSelectAnotherHost(*h1);
+  const bool h2_selectable = !context || !context->shouldSelectAnotherHost(*h2);
+
+  // Get the cost for each host.
+  const double cost1 = getHostCost(*h1);
+  const double cost2 = getHostCost(*h2);
+
+  Upstream::HostConstSharedPtr selected_host = nullptr;
+  if (h1_selectable && h2_selectable) {
+    selected_host = (cost1 < cost2) ? h1 : h2;
+  } else if (h1_selectable) {
+    selected_host = h1;
+  } else if (h2_selectable) {
+    selected_host = h2;
+  }
+  
+  // If neither host is selectable, selected_host will be nullptr.
   return Upstream::HostSelectionResponse{selected_host};
 }
 
 Upstream::HostConstSharedPtr
 PeakEwmaLoadBalancer::peekAnotherHost(Upstream::LoadBalancerContext* /*context*/) {
+  // P2C could also be implemented here, but for now, we leave it as is.
   return nullptr;
 }
 
