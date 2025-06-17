@@ -4,7 +4,7 @@
 #include "envoy/upstream/cluster_manager.h"
 
 #include "source/extensions/filters/http/common/pass_through_filter.h"
-#include "source/extensions/load_balancing_policies/peak_ewma/peak_ewma_lb.h"
+#include "contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/source/peak_ewma_lb.h"
 
 namespace Envoy {
 namespace Extensions {

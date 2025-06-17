@@ -3,7 +3,7 @@
 #include "envoy/upstream/load_balancer.h"
 
 #include "source/extensions/load_balancing_policies/common/load_balancer_impl.h"
-#include "source/extensions/load_balancing_policies/peak_ewma/ewma.h"
+#include "contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/source/ewma.h"
 
 #include "contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/peak_ewma.pb.h"
 

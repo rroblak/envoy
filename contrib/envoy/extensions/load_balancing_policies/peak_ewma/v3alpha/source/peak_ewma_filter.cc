@@ -1,4 +1,4 @@
-#include "source/extensions/load_balancing_policies/peak_ewma/peak_ewma_filter.h"
+#include "contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/source/peak_ewma_filter.h"
 
 #include "envoy/stream_info/stream_info.h"
 

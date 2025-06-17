@@ -78,6 +78,11 @@ CONTRIB_EXTENSIONS = {
     "envoy.generic_proxy.codecs.kafka":                         "//contrib/generic_proxy/filters/network/source/codecs/kafka:config",
 
     #
+    # Load balancing policies
+    #
+    "envoy.load_balancing_policies.peak_ewma":      "//contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/source:config",
+
+    #
     # xDS delegates
     #
 

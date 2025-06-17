@@ -1,4 +1,4 @@
-#include "source/extensions/load_balancing_policies/peak_ewma/config.h"
+#include "contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/source/config.h"
 
 #include "envoy/registry/registry.h"
 #include "source/extensions/load_balancing_policies/common/load_balancer_impl.h"
