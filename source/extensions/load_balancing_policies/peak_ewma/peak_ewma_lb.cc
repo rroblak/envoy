@@ -5,7 +5,7 @@
 
 #include "envoy/upstream/upstream.h"
 
-#include "source/common/common/assert.hh"
+#include "source/common/common/assert.h"
 #include "source/common/protobuf/utility.h"
 #include "source/common/stats/utility.h"
 
