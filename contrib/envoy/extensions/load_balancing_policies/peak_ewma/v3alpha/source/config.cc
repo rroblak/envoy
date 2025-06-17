@@ -1,7 +1,7 @@
 #include "contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/source/config.h"
 
 #include "envoy/registry/registry.h"
-#include "source/extensions/load_balancing_policies/common/load_balancer_impl.h"
+// The invalid include has been removed. We will create our own implementation.
 
 namespace Envoy {
 namespace Extensions {
@@ -10,7 +10,6 @@ namespace PeakEwma {
 
 /**
  * This is the actual factory that creates a PeakEwmaLoadBalancer on each worker thread.
- * It's created once on the main thread and shared with all worker threads.
  */
 class LbFactory : public Upstream::LoadBalancerFactory {
 public:
@@ -20,8 +19,6 @@ public:
         random_(random), time_source_(time_source) {}
 
   Upstream::LoadBalancerPtr create(Upstream::LoadBalancerParams params) override {
-    // This is where the actual load balancer instance is created on a worker thread.
-    // It correctly calls the PeakEwmaLoadBalancer constructor with all necessary dependencies.
     return std::make_unique<PeakEwmaLoadBalancer>(params, cluster_info_, cluster_info_.lbStats(),
                                                   runtime_, random_, time_source_, config_);
   }
@@ -35,18 +32,25 @@ private:
 };
 
 /**
- * This is the implementation for the Thread-Aware Load Balancer wrapper.
- * Its main job is to hold the LbFactory.
+ * This is our own self-contained implementation of the ThreadAwareLoadBalancer.
+ * It holds the factory and implements the interface without depending on core code.
  */
-class ThreadAwareLb : public Upstream::ThreadAwareLoadBalancer {
+class PeakEwmaThreadAwareLb : public Upstream::ThreadAwareLoadBalancer {
 public:
-  ThreadAwareLb(Upstream::LoadBalancerFactorySharedPtr factory) : factory_(std::move(factory)) {}
+  PeakEwmaThreadAwareLb(Upstream::LoadBalancerFactorySharedPtr factory)
+      : factory_(std::move(factory)) {}
+
   Upstream::LoadBalancerFactorySharedPtr factory() override { return factory_; }
-  absl::Status initialize() override { return absl::OkStatus(); }
+
+  absl::Status initialize() override {
+    // No-op for this LB type.
+    return absl::OkStatus();
+  }
 
 private:
   Upstream::LoadBalancerFactorySharedPtr factory_;
 };
+
 
 // Implementation of the main factory's create() method.
 Upstream::ThreadAwareLoadBalancerPtr PeakEwmaLoadBalancerFactory::create(
@@ -57,16 +61,14 @@ Upstream::ThreadAwareLoadBalancerPtr PeakEwmaLoadBalancerFactory::create(
   const auto* config = dynamic_cast<const PeakEwmaLbConfig*>(lb_config.ptr());
   ASSERT(config != nullptr, "Invalid config passed to PeakEwmaLoadBalancerFactory::create");
 
-  // Create the LbFactory that will be shared across worker threads.
   auto factory = std::make_shared<LbFactory>(*config, cluster_info, runtime, random, time_source);
-  // Return the thread-aware wrapper.
-  return std::make_unique<ThreadAwareLb>(std::move(factory));
+  // Return OUR local implementation, not the one from the core library.
+  return std::make_unique<PeakEwmaThreadAwareLb>(std::move(factory));
 }
 
 // Implementation of the main factory's loadConfig() method.
 absl::StatusOr<Upstream::LoadBalancerConfigPtr> PeakEwmaLoadBalancerFactory::loadConfig(
     Server::Configuration::ServerFactoryContext&, const Protobuf::Message& config) {
-  // Cast the generic proto message to our specific type and wrap it in our config object.
   const auto& typed_config = dynamic_cast<
       const envoy::extensions::load_balancing_policies::peak_ewma::v3alpha::PeakEwma&>(config);
   return std::make_unique<PeakEwmaLbConfig>(typed_config);

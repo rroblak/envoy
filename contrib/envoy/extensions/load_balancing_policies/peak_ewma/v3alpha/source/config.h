@@ -18,8 +18,8 @@ namespace PeakEwma {
  */
 class PeakEwmaLbConfig : public Upstream::LoadBalancerConfig {
 public:
-  PeakEwmaLbConfig(const envoy::extensions::load_balancing_policies::peak_ewma::v3alpha::PeakEwma&
-                       proto_config)
+  PeakEwmaLbConfig(
+      const envoy::extensions::load_balancing_policies::peak_ewma::v3alpha::PeakEwma& proto_config)
       : proto_config_(proto_config) {}
 
   const envoy::extensions::load_balancing_policies::peak_ewma::v3alpha::PeakEwma proto_config_;
@@ -27,26 +27,23 @@ public:
 
 /**
  * Factory for creating Peak EWMA load balancer instances.
- * This class now directly implements the TypedLoadBalancerFactory interface.
+ * This class now directly implements the TypedLoadBalancerFactory interface, which is the
+ * modern and correct pattern.
  */
 class PeakEwmaLoadBalancerFactory : public Upstream::TypedLoadBalancerFactory {
 public:
   std::string name() const override { return "envoy.load_balancing_policies.peak_ewma"; }
 
-  // Creates the ThreadAwareLoadBalancer.
   Upstream::ThreadAwareLoadBalancerPtr
   create(OptRef<const Upstream::LoadBalancerConfig> lb_config,
          const Upstream::ClusterInfo& cluster_info, const Upstream::PrioritySet& priority_set,
          Runtime::Loader& runtime, Random::RandomGenerator& random,
          TimeSource& time_source) override;
 
-  // FIX: The signature of loadConfig is corrected to match the base class.
-  // The first parameter is the context, the second is the config message.
   absl::StatusOr<Upstream::LoadBalancerConfigPtr>
   loadConfig(Server::Configuration::ServerFactoryContext& context,
              const Protobuf::Message& config) override;
 
-  // FIX: Added missing pure virtual method implementation.
   ProtobufTypes::MessagePtr createEmptyConfigProto() override {
     return std::make_unique<
         envoy::extensions::load_balancing_policies::peak_ewma::v3alpha::PeakEwma>();

@@ -25,14 +25,16 @@ envoy_cc_library(
         "peak_ewma_lb.h",
         "peak_ewma_filter.h",
         "peak_ewma_filter_config.h",
+        # Add our new local base class header
+        "load_balancer_base.h",
     ],
     repository = "@envoy",
     deps = [
+        # REMOVED the forbidden dependency on //source/extensions/...:load_balancer_lib
         "//source/common/common:utility_lib",
         "//source/common/config:utility_lib",
         "//source/common/runtime:runtime_lib",
         "//source/common/upstream:upstream_lib",
-        # Corrected dependency from :factory_base_lib to :factory_base
         "//source/extensions/load_balancing_policies/common:factory_base",
         "//contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha:pkg_cc_proto",
     ],

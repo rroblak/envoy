@@ -21,9 +21,10 @@ envoy_cc_test(
         # Link against the implementation library being tested.
         "//contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/source:peak_ewma_lb_lib",
 
+        # Corrected dependency to provide load_balancer_impl.h
+        "//source/extensions/load_balancing_policies/common:load_balancer_lib",
+
         # All other necessary dependencies for mocks and utilities.
-        # The '//test:main' dependency has been removed, as it is automatically
-        # included by the envoy_cc_test rule.
         "//source/common/upstream:upstream_lib",
         "//test/mocks:common_lib",
         "//test/mocks/runtime:runtime_mocks",

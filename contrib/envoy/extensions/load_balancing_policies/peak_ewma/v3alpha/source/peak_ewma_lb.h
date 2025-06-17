@@ -2,7 +2,7 @@
 
 #include "envoy/upstream/load_balancer.h"
 
-#include "source/extensions/load_balancing_policies/common/load_balancer_impl.h"
+#include "contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/source/load_balancer_base.h"
 #include "contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/source/ewma.h"
 
 #include "contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/peak_ewma.pb.h"
@@ -39,19 +39,19 @@ private:
 /**
  * This is the implementation of the Peak EWMA load balancer.
  */
-class PeakEwmaLoadBalancer : public Upstream::LoadBalancerBase {
+class PeakEwmaLoadBalancer : public PeakEwma::LoadBalancerBase {
 public:
-  // The constructor signature is updated to match the implementation.
+  // The constructor signature is updated to match the new factory implementation.
   PeakEwmaLoadBalancer(
-      const Upstream::LoadBalancerParams& params,
-      // Dependencies like stats, runtime, etc., are passed directly from the factory
-      // instead of being accessed from a common_config struct.
-      const Upstream::ClusterInfo& cluster_info, Upstream::ClusterLbStats& stats,
-      Runtime::Loader& runtime, Random::RandomGenerator& random, TimeSource& time_source,
+      const Upstream::LoadBalancerParams& params, const Upstream::ClusterInfo& cluster_info,
+      Upstream::ClusterLbStats& stats, Runtime::Loader& runtime, Random::RandomGenerator& random,
+      TimeSource& time_source,
       const envoy::extensions::load_balancing_policies::peak_ewma::v3alpha::PeakEwma& config);
 
-  // Upstream::LoadBalancer
+  // Updated to return HostSelectionResponse to match the interface.
   Upstream::HostSelectionResponse chooseHost(Upstream::LoadBalancerContext* context) override;
+  
+  // Corrected the return type to match the base class.
   Upstream::HostConstSharedPtr peekAnotherHost(Upstream::LoadBalancerContext* context) override;
 
 private:
@@ -64,14 +64,10 @@ private:
   p2cPick(Upstream::LoadBalancerContext* context, bool peeking);
 
   TimeSource& time_source_;
-  // This member is added to hold the local priority set.
   const Upstream::PrioritySet* local_priority_set_{};
-  Random::RandomGenerator& random_;
   const envoy::extensions::load_balancing_policies::peak_ewma::v3alpha::PeakEwma config_proto_;
   const double default_rtt_ms_;
   const double smoothing_factor_;
-  // The type for the callback handle is corrected to Common::CallbackHandlePtr
-  // based on the return type of PrioritySet::addMemberUpdateCb.
   Common::CallbackHandlePtr member_update_cb_handle_;
 };
 

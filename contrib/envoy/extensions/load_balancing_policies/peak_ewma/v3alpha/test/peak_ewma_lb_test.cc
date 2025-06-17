@@ -3,7 +3,7 @@
  */
 
 #include "envoy/config/cluster/v3/cluster.pb.h"
-#include "envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/peak_ewma.pb.h"
+#include "contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/peak_ewma.pb.h"
 
 #include "source/common/upstream/upstream_impl.h"
 #include "contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/source/ewma.h"
