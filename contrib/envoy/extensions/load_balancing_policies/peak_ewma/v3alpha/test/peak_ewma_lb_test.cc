@@ -37,15 +37,17 @@ public:
   PeakEwmaLoadBalancerTest() {
     // Set up 3 mock hosts for the test.
     for (int i = 0; i < 3; ++i) {
-      hosts_.emplace_back(std::make_shared<NiceMock<Upstream::MockHost>>());
-      ON_CALL(*hosts_[i], stats()).WillByDefault(ReturnRef(host_stats_[i]));
+      // CORRECTED: Create the specific MockHost first.
+      auto mock_host = std::make_shared<NiceMock<Upstream::MockHost>>();
+      // Set up the mock expectation on the concrete MockHost object.
+      ON_CALL(*mock_host, stats()).WillByDefault(ReturnRef(host_stats_[i]));
+      // Then, emplace it into the vector of base class pointers.
+      hosts_.emplace_back(mock_host);
     }
     
-    // Create shared pointers for the host vectors, as required by HostSetImpl::updateHosts.
-    auto hosts_ptr = std::make_shared<Upstream::HostVector>(hosts_.begin(), hosts_.end());
-    auto healthy_hosts_ptr = std::make_shared<Upstream::HealthyHostVector>(hosts_.begin(), hosts_.end());
+    auto hosts_ptr = std::make_shared<Upstream::HostVector>(hosts_);
+    auto healthy_hosts_ptr = std::make_shared<Upstream::HealthyHostVector>(hosts_);
 
-    // Use a real HostSetImpl and populate it correctly via its public updateHosts method.
     host_set_ = std::make_unique<Upstream::HostSetImpl>(0, absl::nullopt, absl::nullopt);
     host_set_->updateHosts(
         Upstream::HostSetImpl::updateHostsParams(
@@ -54,7 +56,6 @@ public:
             Upstream::HostsPerLocalityImpl::empty(), nullptr, Upstream::HostsPerLocalityImpl::empty()),
         nullptr, {}, {}, 0, absl::nullopt, absl::nullopt);
 
-    // Set up the mock priority set to return our host set.
     host_sets_.emplace_back(std::move(host_set_));
     ON_CALL(priority_set_, hostSetsPerPriority()).WillByDefault(ReturnRef(host_sets_));
   }
@@ -70,14 +71,11 @@ public:
   void setHostStats(size_t host_index, uint64_t active_requests, double ewma_rtt) {
     host_stats_[host_index].rq_active_.set(active_requests);
 
-    // Use the peer class to access the private host_stats_map_ for testing.
     auto& map = PeakEwmaTestPeer::hostStatsMap(*lb_);
     auto it = map.find(hosts_[host_index]);
 
-    // Ensure the host was found in the map before trying to modify it.
     ASSERT_NE(it, map.end());
 
-    // Directly reset the EwmaCalculator to a known value.
     it->second.rtt_ewma_.reset(ewma_rtt);
   }
 
@@ -86,10 +84,9 @@ public:
   NiceMock<Upstream::MockPrioritySet> priority_set_;
   std::vector<Upstream::HostSetPtr> host_sets_;
   std::unique_ptr<Upstream::HostSetImpl> host_set_;
-  std::vector<std::shared_ptr<Upstream::MockHost>> hosts_;
+  Upstream::HostVector hosts_;
   std::array<Upstream::HostStats, 3> host_stats_;
   NiceMock<Runtime::MockLoader> runtime_;
-  // Corrected mock types.
   NiceMock<Random::MockRandomGenerator> random_;
   NiceMock<MockTimeSystem> time_source_;
   envoy::extensions::load_balancing_policies::peak_ewma::v3alpha::PeakEwma config_;
