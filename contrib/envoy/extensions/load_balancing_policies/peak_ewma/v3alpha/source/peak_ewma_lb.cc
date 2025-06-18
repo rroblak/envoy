@@ -54,7 +54,7 @@ void PeakEwmaLoadBalancer::onHostSetUpdate(const Upstream::HostVector& hosts_add
   }
 }
 
-// CORRECTED: This function now accepts a HostConstSharedPtr to be used as a map key.
+// The definition now correctly matches the declaration in the header.
 double PeakEwmaLoadBalancer::getHostCost(const Upstream::HostConstSharedPtr& host) {
   auto it = host_stats_map_.find(host);
   if (it == host_stats_map_.end()) {
@@ -81,7 +81,6 @@ PeakEwmaLoadBalancer::chooseHost(Upstream::LoadBalancerContext* context) {
   for (const auto& host_set : priority_set_.hostSetsPerPriority()) {
     if (host_set) {
       for (const auto& host : host_set->healthyHosts()) {
-        // CORRECTED: Pass the HostConstSharedPtr directly.
         const double cost = getHostCost(host);
         if (cost < min_cost) {
           min_cost = cost;
@@ -100,10 +99,25 @@ PeakEwmaLoadBalancer::peekAnotherHost(Upstream::LoadBalancerContext*) {
   return nullptr;
 }
 
+// ADDED: Implementation for missing pure virtual method.
+OptRef<Envoy::Http::ConnectionPool::ConnectionLifetimeCallbacks>
+PeakEwmaLoadBalancer::lifetimeCallbacks() {
+  // This LB does not track connection lifetime events.
+  return {};
+}
+
+// ADDED: Implementation for missing pure virtual method.
+absl::optional<Upstream::SelectedPoolAndConnection> PeakEwmaLoadBalancer::selectExistingConnection(
+    Upstream::LoadBalancerContext* /*context*/, const Upstream::Host& /*host*/,
+    std::vector<uint8_t>& /*hash_key*/) {
+  // This LB does not support selecting existing connections.
+  return absl::nullopt;
+}
+
+
 PeakEwmaHostStats::PeakEwmaHostStats(double smoothing_factor, double default_rtt,
                                      Stats::Scope& scope, const Upstream::Host& host)
     : rtt_ewma_(smoothing_factor, default_rtt),
-      // CORRECTED: Use gaugeFromString, which is the correct method for dynamic stat creation.
       cost_stat_(scope.gaugeFromString(
           absl::StrCat("peak_ewma.", host.address()->asString(), ".cost"),
           Stats::Gauge::ImportMode::NeverImport)) {}

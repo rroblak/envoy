@@ -50,6 +50,12 @@ public:
   Upstream::HostSelectionResponse chooseHost(Upstream::LoadBalancerContext* context) override;
   Upstream::HostConstSharedPtr peekAnotherHost(Upstream::LoadBalancerContext* context) override;
 
+  // ADDED: Declarations for missing pure virtual methods from the LoadBalancer interface.
+  OptRef<Envoy::Http::ConnectionPool::ConnectionLifetimeCallbacks> lifetimeCallbacks() override;
+  absl::optional<Upstream::SelectedPoolAndConnection>
+  selectExistingConnection(Upstream::LoadBalancerContext* context, const Upstream::Host& host,
+                           std::vector<uint8_t>& hash_key) override;
+
 private:
   friend class PeakEwmaLoadBalancerFactory;
 
