@@ -12,6 +12,10 @@ namespace Envoy {
 namespace Extensions {
 namespace LoadBalancingPolicies {
 namespace PeakEwma {
+namespace {
+// Forward declaration for the test peer class.
+class PeakEwmaTestPeer;
+} // namespace
 
 // Forward declaration of the factory
 class PeakEwmaLoadBalancerFactory;
@@ -30,8 +34,10 @@ public:
   void recordRttSample(std::chrono::milliseconds rtt);
   void setComputedCostStat(double cost) { cost_stat_.set(static_cast<uint64_t>(cost)); }
 
-private:
+  // Made public for test access.
   EwmaCalculator rtt_ewma_;
+
+private:
   // The gauge is now stored directly, not as a reference.
   Stats::Gauge& cost_stat_;
 };
@@ -50,14 +56,14 @@ public:
   Upstream::HostSelectionResponse chooseHost(Upstream::LoadBalancerContext* context) override;
   Upstream::HostConstSharedPtr peekAnotherHost(Upstream::LoadBalancerContext* context) override;
 
-  // ADDED: Declarations for missing pure virtual methods from the LoadBalancer interface.
   OptRef<Envoy::Http::ConnectionPool::ConnectionLifetimeCallbacks> lifetimeCallbacks() override;
   absl::optional<Upstream::SelectedPoolAndConnection>
   selectExistingConnection(Upstream::LoadBalancerContext* context, const Upstream::Host& host,
                            std::vector<uint8_t>& hash_key) override;
 
 private:
-  friend class PeakEwmaLoadBalancerFactory;
+  // Declared the test peer as a friend to allow access to private members.
+  friend class PeakEwmaTestPeer;
 
   // This map will hold the stats for each host, removing the need to modify the Host object.
   using HostStatsMap = absl::flat_hash_map<Upstream::HostConstSharedPtr, PeakEwmaHostStats>;
@@ -65,7 +71,6 @@ private:
   void onHostSetUpdate(const Upstream::HostVector& hosts_added,
                        const Upstream::HostVector& hosts_removed);
   
-  // CORRECTED: The signature now matches the implementation in the .cc file.
   double getHostCost(const Upstream::HostConstSharedPtr& host);
 
   const Upstream::ClusterInfo& cluster_info_;
