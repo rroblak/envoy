@@ -58,7 +58,9 @@ private:
 
   void onHostSetUpdate(const Upstream::HostVector& hosts_added,
                        const Upstream::HostVector& hosts_removed);
-  double getHostCost(const Upstream::Host& host);
+  
+  // CORRECTED: The signature now matches the implementation in the .cc file.
+  double getHostCost(const Upstream::HostConstSharedPtr& host);
 
   const Upstream::ClusterInfo& cluster_info_;
   TimeSource& time_source_;
