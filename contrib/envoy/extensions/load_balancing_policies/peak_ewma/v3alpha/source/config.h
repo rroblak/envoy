@@ -12,10 +12,6 @@ namespace Extensions {
 namespace LoadBalancingPolicies {
 namespace PeakEwma {
 
-/**
- * A simple configuration class to hold the parsed proto config.
- * This will be passed from the main thread to worker threads.
- */
 class PeakEwmaLbConfig : public Upstream::LoadBalancerConfig {
 public:
   PeakEwmaLbConfig(
@@ -25,11 +21,6 @@ public:
   const envoy::extensions::load_balancing_policies::peak_ewma::v3alpha::PeakEwma proto_config_;
 };
 
-/**
- * Factory for creating Peak EWMA load balancer instances.
- * This class now directly implements the TypedLoadBalancerFactory interface, which is the
- * modern and correct pattern.
- */
 class PeakEwmaLoadBalancerFactory : public Upstream::TypedLoadBalancerFactory {
 public:
   std::string name() const override { return "envoy.load_balancing_policies.peak_ewma"; }

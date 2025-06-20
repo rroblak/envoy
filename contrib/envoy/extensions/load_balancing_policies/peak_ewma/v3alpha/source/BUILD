@@ -1,5 +1,3 @@
-# FILE: contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/source/BUILD
-
 load(
     "//bazel:envoy_build_system.bzl",
     "envoy_cc_contrib_extension",
@@ -25,13 +23,11 @@ envoy_cc_library(
         "peak_ewma_lb.h",
         "peak_ewma_filter.h",
         "peak_ewma_filter_config.h",
-        # Add our new local base class header
         "load_balancer_base.h",
     ],
     repository = "@envoy",
     visibility = ["//test:__subpackages__"],
     deps = [
-        # REMOVED the forbidden dependency on //source/extensions/...:load_balancer_lib
         "//source/common/common:utility_lib",
         "//source/common/config:utility_lib",
         "//source/common/runtime:runtime_lib",

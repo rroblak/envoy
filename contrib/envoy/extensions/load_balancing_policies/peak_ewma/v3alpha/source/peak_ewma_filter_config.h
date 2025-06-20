@@ -10,8 +10,6 @@ namespace Extensions {
 namespace LoadBalancingPolicies {
 namespace PeakEwma {
 
-// This configuration factory is needed to register the PeakEwmaRttFilter with Envoy.
-// The filter itself takes no configuration, so it uses google.protobuf.Empty.
 class PeakEwmaFilterConfigFactory
     : public Server::Configuration::NamedHttpFilterConfigFactory {
 public:

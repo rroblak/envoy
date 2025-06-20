@@ -15,8 +15,6 @@ absl::StatusOr<Http::FilterFactoryCb> PeakEwmaFilterConfigFactory::createFilterF
   };
 }
 
-// Register the filter factory. This makes the filter available under the name
-// "envoy.filters.http.peak_ewma_rtt".
 REGISTER_FACTORY(PeakEwmaFilterConfigFactory, Server::Configuration::NamedHttpFilterConfigFactory);
 
 } // namespace PeakEwma

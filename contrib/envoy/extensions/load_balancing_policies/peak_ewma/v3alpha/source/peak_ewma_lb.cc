@@ -9,7 +9,7 @@
 #include "source/common/protobuf/utility.h"
 
 #include "absl/base/attributes.h"
-#include "absl/status/status.h" 
+#include "absl/status/status.h"
 
 namespace Envoy {
 namespace Extensions {
@@ -103,24 +103,20 @@ PeakEwmaLoadBalancer::chooseHost(ABSL_ATTRIBUTE_UNUSED Upstream::LoadBalancerCon
     return {nullptr};
   }
 
-  // Handle single host case
   if (hosts_to_consider.size() == 1) {
     return {hosts_to_consider[0]};
   }
 
-  // P2C: Randomly select two different hosts
   const size_t host_count = hosts_to_consider.size();
   const size_t first_choice = random_.random() % host_count;
   size_t second_choice;
   
-  // Safety: limit attempts to prevent infinite loop in case of broken random generator
   int attempts = 0;
   do {
     second_choice = random_.random() % host_count;
     ++attempts;
   } while (second_choice == first_choice && attempts < 10);
   
-  // Fallback: if we couldn't find a different host after 10 attempts, use next index
   if (second_choice == first_choice) {
     second_choice = (first_choice + 1) % host_count;
   }
@@ -128,18 +124,15 @@ PeakEwmaLoadBalancer::chooseHost(ABSL_ATTRIBUTE_UNUSED Upstream::LoadBalancerCon
   const auto& host1 = hosts_to_consider[first_choice];
   const auto& host2 = hosts_to_consider[second_choice];
 
-  // Calculate costs for both hosts
   const double cost1 = getHostCost(host1);
   const double cost2 = getHostCost(host2);
 
-  // Select the host with lower cost
   Upstream::HostConstSharedPtr selected_host;
   if (cost1 < cost2) {
     selected_host = host1;
   } else if (cost2 < cost1) {
     selected_host = host2;
   } else {
-    // Costs are equal, randomly select one
     selected_host = (random_.random() % 2 == 0) ? host1 : host2;
   }
 
