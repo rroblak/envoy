@@ -1,21 +1,26 @@
 #include "contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/source/peak_ewma_lb.h"
+#include "envoy/config/cluster/v3/cluster.pb.h"
 
-#include "source/common/upstream/upstream_impl.h"
+#include "source/common/common/logger.h"
+#include "source/common/network/address_impl.h" 
 
+#include "test/common/stats/stat_test_utility.h"
 #include "test/mocks/common.h"
-#include "test/mocks/event/mocks.h"
+#include "test/mocks/network/mocks.h"
 #include "test/mocks/runtime/mocks.h"
 #include "test/mocks/upstream/cluster_info.h"
 #include "test/mocks/upstream/host.h"
 #include "test/mocks/upstream/priority_set.h"
-#include "test/test_common/utility.h"
+#include "test/test_common/status_utility.h" 
 
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 
-// Bring testing namespace into scope for cleaner syntax
-using ::testing::Return;
-using ::testing::ReturnRef;
+using testing::_;
+using testing::DoAll;
+using testing::Return;
+using testing::ReturnRef;
+using testing::SaveArg;
 
 namespace Envoy {
 namespace Extensions {
@@ -23,109 +28,285 @@ namespace LoadBalancingPolicies {
 namespace PeakEwma {
 namespace {
 
-// A test-only "peer" class to access private members of the load balancer for testing.
 class PeakEwmaTestPeer {
 public:
-  static absl::flat_hash_map<Upstream::HostConstSharedPtr, PeakEwmaHostStats>&
-  hostStatsMap(PeakEwmaLoadBalancer& lb) {
-    return lb.host_stats_map_;
+  PeakEwmaTestPeer(PeakEwmaLoadBalancer& lb) : lb_(lb) {}
+  absl::flat_hash_map<Upstream::HostConstSharedPtr, PeakEwmaHostStats>& hostStatsMap() {
+    return lb_.host_stats_map_;
   }
+private:
+  PeakEwmaLoadBalancer& lb_;
 };
 
 class PeakEwmaLoadBalancerTest : public ::testing::Test {
 public:
-  PeakEwmaLoadBalancerTest() {
-    // Set up 3 mock hosts for the test.
+  PeakEwmaLoadBalancerTest()
+      : stat_names_(store_.symbolTable()),
+        stats_(stat_names_, *store_.rootScope()) {
+    
+    // Create 3 mock hosts
     for (int i = 0; i < 3; ++i) {
-      // CORRECTED: Create the specific MockHost first.
       auto mock_host = std::make_shared<NiceMock<Upstream::MockHost>>();
-      // Set up the mock expectation on the concrete MockHost object.
-      ON_CALL(*mock_host, stats()).WillByDefault(ReturnRef(host_stats_[i]));
-      // Then, emplace it into the vector of base class pointers.
+      ON_CALL(*mock_host, address())
+          .WillByDefault(Return(
+              std::make_shared<Network::Address::Ipv4Instance>("10.0.0." + std::to_string(i + 1))));
+      // MockHost already provides a working stats() method, no need to mock it
       hosts_.emplace_back(mock_host);
     }
+  }
+
+  void SetUp() override {
+    // Use getMockHostSet(0) for priority 0 host set
+    host_set_ = priority_set_.getMockHostSet(0);
     
-    auto hosts_ptr = std::make_shared<Upstream::HostVector>(hosts_);
-    auto healthy_hosts_ptr = std::make_shared<Upstream::HealthyHostVector>(hosts_);
+    // Set up the hosts in the host set
+    host_set_->hosts_ = hosts_;
+    host_set_->healthy_hosts_ = hosts_;
+    
+    ON_CALL(priority_set_, hostSetsPerPriority()).WillByDefault(ReturnRef(priority_set_.host_sets_));
+    ON_CALL(*cluster_info_, statsScope()).WillByDefault(ReturnRef(*store_.rootScope()));
 
-    host_set_ = std::make_unique<Upstream::HostSetImpl>(0, absl::nullopt, absl::nullopt);
-    host_set_->updateHosts(
-        Upstream::HostSetImpl::updateHostsParams(
-            hosts_ptr, Upstream::HostsPerLocalityImpl::empty(), healthy_hosts_ptr,
-            Upstream::HostsPerLocalityImpl::empty(), nullptr,
-            Upstream::HostsPerLocalityImpl::empty(), nullptr, Upstream::HostsPerLocalityImpl::empty()),
-        nullptr, {}, {}, 0, absl::nullopt, absl::nullopt);
-
-    host_sets_.emplace_back(std::move(host_set_));
-    ON_CALL(priority_set_, hostSetsPerPriority()).WillByDefault(ReturnRef(host_sets_));
+    Upstream::LoadBalancerParams params{priority_set_, nullptr};
+    config_.mutable_default_rtt()->set_seconds(1);
+    config_.set_rtt_smoothing_factor(0.5);
+    
+    lb_ = std::make_unique<PeakEwmaLoadBalancer>(params, *cluster_info_, stats_, runtime_, random_,
+                                                 time_source_, config_);
+    
+    // Trigger the member update callback by calling runCallbacks
+    host_set_->runCallbacks(hosts_, {});
   }
 
-  void initialize(const std::string& yaml_config) {
-    TestUtility::loadFromYaml(yaml_config, config_);
-    lb_ = std::make_unique<PeakEwmaLoadBalancer>(
-        Upstream::LoadBalancerParams{priority_set_, &priority_set_}, *cluster_info_,
-        cluster_info_->lbStats(), runtime_, random_, time_source_, config_);
+  void setHostStats(Upstream::HostConstSharedPtr host, std::chrono::milliseconds rtt,
+                    uint32_t active_requests) {
+    host->stats().rq_active_.set(active_requests);
+    PeakEwmaTestPeer peer(*lb_);
+    auto& map = peer.hostStatsMap();
+    auto it = map.find(host);
+    ASSERT_NE(it, map.end()) << "Host " << host->address()->asString() << " not found in host_stats_map_";
+    it->second.rtt_ewma_.reset(static_cast<double>(rtt.count()));
   }
 
-  // Helper to manually set the EWMA RTT for a host for predictable testing.
-  void setHostStats(size_t host_index, uint64_t active_requests, double ewma_rtt) {
-    host_stats_[host_index].rq_active_.set(active_requests);
-
-    auto& map = PeakEwmaTestPeer::hostStatsMap(*lb_);
-    auto it = map.find(hosts_[host_index]);
-
-    ASSERT_NE(it, map.end());
-
-    it->second.rtt_ewma_.reset(ewma_rtt);
-  }
-
+  Stats::TestUtil::TestStore store_;
+  Upstream::ClusterLbStatNames stat_names_;
+  Upstream::ClusterLbStats stats_;
+  
+  std::vector<Upstream::HostSharedPtr> hosts_;
+  NiceMock<Upstream::MockPrioritySet> priority_set_;
+  Upstream::MockHostSet* host_set_{nullptr};
   std::shared_ptr<NiceMock<Upstream::MockClusterInfo>> cluster_info_{
       std::make_shared<NiceMock<Upstream::MockClusterInfo>>()};
-  NiceMock<Upstream::MockPrioritySet> priority_set_;
-  std::vector<Upstream::HostSetPtr> host_sets_;
-  std::unique_ptr<Upstream::HostSetImpl> host_set_;
-  Upstream::HostVector hosts_;
-  std::array<Upstream::HostStats, 3> host_stats_;
   NiceMock<Runtime::MockLoader> runtime_;
   NiceMock<Random::MockRandomGenerator> random_;
-  NiceMock<MockTimeSystem> time_source_;
+  MockTimeSystem time_source_;
   envoy::extensions::load_balancing_policies::peak_ewma::v3alpha::PeakEwma config_;
   std::unique_ptr<PeakEwmaLoadBalancer> lb_;
 };
 
-TEST_F(PeakEwmaLoadBalancerTest, SelectsHostWithLowestCost) {
-  const std::string yaml = R"EOF(
-    default_rtt: 100ms
-    rtt_smoothing_factor: 0.5
-  )EOF";
-  initialize(yaml);
+TEST_F(PeakEwmaLoadBalancerTest, P2CSelectsHostWithLowerCost) {
+  setHostStats(hosts_[0], std::chrono::milliseconds(100), 1);  // cost = 100 * 2 = 200
+  setHostStats(hosts_[1], std::chrono::milliseconds(20), 2);   // cost = 20 * 3 = 60
+  setHostStats(hosts_[2], std::chrono::milliseconds(50), 10);  // cost = 50 * 11 = 550
 
-  // Cost = RTT * (active_requests + 1)
-  setHostStats(0, 1, 20.0); // Cost = 40
-  setHostStats(1, 2, 10.0); // Cost = 30 (min)
-  setHostStats(2, 10, 5.0); // Cost = 55
+  // Force P2C to select hosts_[0] and hosts_[1]
+  EXPECT_CALL(random_, random())
+      .WillOnce(Return(0))  // first_choice = 0 (hosts_[0])
+      .WillOnce(Return(1)); // second_choice = 1 (hosts_[1])
 
-  // Correctly access the .host member of the response struct.
-  EXPECT_EQ(lb_->chooseHost(nullptr).host, hosts_[1]);
+  auto result = lb_->chooseHost(nullptr);
+  // Should select hosts_[1] because it has lower cost (60 < 200)
+  EXPECT_EQ(result.host, hosts_[1]);
 }
 
-TEST_F(PeakEwmaLoadBalancerTest, TieBreaking) {
-  const std::string yaml = R"EOF(
-    default_rtt: 100ms
-    rtt_smoothing_factor: 0.5
-  )EOF";
-  initialize(yaml);
+TEST_F(PeakEwmaLoadBalancerTest, P2CTieBreaking) {
+  setHostStats(hosts_[0], std::chrono::milliseconds(50), 3);  // cost = 50 * 4 = 200
+  setHostStats(hosts_[1], std::chrono::milliseconds(40), 4);  // cost = 40 * 5 = 200
+  setHostStats(hosts_[2], std::chrono::milliseconds(100), 5); // cost = 100 * 6 = 600
 
-  setHostStats(0, 4, 20.0); // Cost = 100
-  setHostStats(1, 9, 10.0); // Cost = 100
-  setHostStats(2, 5, 50.0); // Cost = 300
+  // Force P2C to select hosts_[0] and hosts_[1] (both have same cost)
+  EXPECT_CALL(random_, random())
+      .WillOnce(Return(0))  // first_choice = 0 (hosts_[0])
+      .WillOnce(Return(1))  // second_choice = 1 (hosts_[1])
+      .WillOnce(Return(0)); // tie-breaking: select first host
 
-  // Use the 'testing::' namespace for GMock actions.
-  EXPECT_CALL(random_, random()).WillOnce(testing::Return(0));
-  EXPECT_EQ(lb_->chooseHost(nullptr).host, hosts_[0]);
+  auto result = lb_->chooseHost(nullptr);
+  // Should select hosts_[0] because tie-breaking random returned 0
+  EXPECT_EQ(result.host, hosts_[0]);
 
-  EXPECT_CALL(random_, random()).WillOnce(testing::Return(1));
-  EXPECT_EQ(lb_->chooseHost(nullptr).host, hosts_[1]);
+  // Test the other tie-breaking case
+  EXPECT_CALL(random_, random())
+      .WillOnce(Return(0))  // first_choice = 0 (hosts_[0])
+      .WillOnce(Return(1))  // second_choice = 1 (hosts_[1])
+      .WillOnce(Return(1)); // tie-breaking: select second host
+
+  result = lb_->chooseHost(nullptr);
+  // Should select hosts_[1] because tie-breaking random returned 1
+  EXPECT_EQ(result.host, hosts_[1]);
+}
+
+TEST_F(PeakEwmaLoadBalancerTest, P2CSingleHost) {
+  // Remove all but one host
+  host_set_->hosts_ = {hosts_[0]};
+  host_set_->healthy_hosts_ = {hosts_[0]};
+  host_set_->runCallbacks({hosts_[0]}, {hosts_[1], hosts_[2]});
+  
+  setHostStats(hosts_[0], std::chrono::milliseconds(100), 1);
+
+  auto result = lb_->chooseHost(nullptr);
+  // Should select the only host without calling random
+  EXPECT_EQ(result.host, hosts_[0]);
+}
+
+TEST_F(PeakEwmaLoadBalancerTest, NoHealthyHosts) {
+  // Set up hosts but no healthy hosts
+  host_set_->hosts_ = hosts_;
+  host_set_->healthy_hosts_ = {};
+  host_set_->runCallbacks({}, {});
+  
+  setHostStats(hosts_[0], std::chrono::milliseconds(100), 1);
+  setHostStats(hosts_[1], std::chrono::milliseconds(200), 2);
+  setHostStats(hosts_[2], std::chrono::milliseconds(300), 3);
+
+  // Should fall back to all hosts and use P2C among them
+  EXPECT_CALL(random_, random())
+      .WillOnce(Return(0))  // first_choice = 0 (hosts_[0])
+      .WillOnce(Return(1)); // second_choice = 1 (hosts_[1])
+
+  auto result = lb_->chooseHost(nullptr);
+  // Should select hosts_[0] because it has lower cost (200 < 400)
+  EXPECT_EQ(result.host, hosts_[0]);
+}
+
+TEST_F(PeakEwmaLoadBalancerTest, NoHostsAvailable) {
+  // Remove all hosts
+  host_set_->hosts_ = {};
+  host_set_->healthy_hosts_ = {};
+  host_set_->runCallbacks({}, {hosts_[0], hosts_[1], hosts_[2]});
+
+  auto result = lb_->chooseHost(nullptr);
+  // Should return nullptr when no hosts available
+  EXPECT_EQ(result.host, nullptr);
+}
+
+TEST_F(PeakEwmaLoadBalancerTest, HostStatsUpdate) {
+  setHostStats(hosts_[0], std::chrono::milliseconds(100), 5);
+  
+  // Verify host stats are properly stored and can be retrieved
+  PeakEwmaTestPeer peer(*lb_);
+  auto& map = peer.hostStatsMap();
+  auto it = map.find(hosts_[0]);
+  ASSERT_NE(it, map.end());
+  
+  // Check that EWMA value was set correctly
+  EXPECT_EQ(it->second.getEwmaRttMs(), 100.0);
+  
+  // Update stats and verify EWMA updates
+  it->second.recordRttSample(std::chrono::milliseconds(200));
+  // With smoothing factor 0.5: new_ewma = 200 * 0.5 + 100 * 0.5 = 150
+  EXPECT_EQ(it->second.getEwmaRttMs(), 150.0);
+}
+
+TEST_F(PeakEwmaLoadBalancerTest, CostCalculation) {
+  // Test various cost scenarios
+  setHostStats(hosts_[0], std::chrono::milliseconds(50), 0);   // cost = 50 * 1 = 50
+  setHostStats(hosts_[1], std::chrono::milliseconds(100), 1);  // cost = 100 * 2 = 200
+  setHostStats(hosts_[2], std::chrono::milliseconds(25), 3);   // cost = 25 * 4 = 100
+
+  // Force selection of hosts_[0] vs hosts_[2]
+  EXPECT_CALL(random_, random())
+      .WillOnce(Return(0))  // first_choice = 0 (hosts_[0])
+      .WillOnce(Return(2)); // second_choice = 2 (hosts_[2])
+
+  auto result = lb_->chooseHost(nullptr);
+  // Should select hosts_[0] because it has lower cost (50 < 100)
+  EXPECT_EQ(result.host, hosts_[0]);
+}
+
+TEST_F(PeakEwmaLoadBalancerTest, P2CRandomSelectionMocked) {
+  // Set all hosts to have same cost for fair comparison
+  setHostStats(hosts_[0], std::chrono::milliseconds(100), 1);  // cost = 200
+  setHostStats(hosts_[1], std::chrono::milliseconds(100), 1);  // cost = 200  
+  setHostStats(hosts_[2], std::chrono::milliseconds(100), 1);  // cost = 200
+
+  // Test first combination: hosts_[0] vs hosts_[1], tie-break to hosts_[0]
+  EXPECT_CALL(random_, random())
+      .WillOnce(Return(0))  // first_choice = 0 (hosts_[0])
+      .WillOnce(Return(1))  // second_choice = 1 (hosts_[1])
+      .WillOnce(Return(0)); // tie-breaking: select first host
+
+  auto result1 = lb_->chooseHost(nullptr);
+  EXPECT_EQ(result1.host, hosts_[0]);
+
+  // Test second combination: hosts_[1] vs hosts_[2], tie-break to hosts_[2]
+  EXPECT_CALL(random_, random())
+      .WillOnce(Return(1))  // first_choice = 1 (hosts_[1])
+      .WillOnce(Return(2))  // second_choice = 2 (hosts_[2])
+      .WillOnce(Return(1)); // tie-breaking: select second host
+
+  auto result2 = lb_->chooseHost(nullptr);
+  EXPECT_EQ(result2.host, hosts_[2]);
+}
+
+TEST_F(PeakEwmaLoadBalancerTest, HealthyPanicMode) {
+  // Set up scenario where no hosts are healthy, should trigger healthy panic
+  host_set_->hosts_ = hosts_;
+  host_set_->healthy_hosts_ = {}; // No healthy hosts
+  host_set_->runCallbacks({}, {});
+  
+  setHostStats(hosts_[0], std::chrono::milliseconds(100), 1);
+  setHostStats(hosts_[1], std::chrono::milliseconds(200), 2);
+  
+  // Force selection between hosts_[0] and hosts_[1]
+  EXPECT_CALL(random_, random())
+      .WillOnce(Return(0))  // first_choice = 0 (hosts_[0])
+      .WillOnce(Return(1)); // second_choice = 1 (hosts_[1])
+
+  auto result = lb_->chooseHost(nullptr);
+  // Should select hosts_[0] due to lower cost and should have incremented panic stat
+  EXPECT_EQ(result.host, hosts_[0]);
+  EXPECT_EQ(stats_.lb_healthy_panic_.value(), 1);
+}
+
+TEST_F(PeakEwmaLoadBalancerTest, HostNotInStatsMap) {
+  // Create a host that's not in the stats map
+  auto orphan_host = std::make_shared<NiceMock<Upstream::MockHost>>();
+  ON_CALL(*orphan_host, address())
+      .WillByDefault(Return(
+          std::make_shared<Network::Address::Ipv4Instance>("10.0.0.99")));
+  
+  // Add it to the host set but don't call the update callback
+  host_set_->hosts_ = {orphan_host, hosts_[1]};
+  host_set_->healthy_hosts_ = {orphan_host, hosts_[1]};
+  
+  setHostStats(hosts_[1], std::chrono::milliseconds(100), 1);
+  
+  // Force selection of orphan_host vs hosts_[1]
+  EXPECT_CALL(random_, random())
+      .WillOnce(Return(0))  // first_choice = 0 (orphan_host)
+      .WillOnce(Return(1)); // second_choice = 1 (hosts_[1])
+
+  auto result = lb_->chooseHost(nullptr);
+  // Should select hosts_[1] because orphan_host has max cost
+  EXPECT_EQ(result.host, hosts_[1]);
+}
+
+TEST_F(PeakEwmaLoadBalancerTest, PeekAnotherHost) {
+  // Test the peekAnotherHost method
+  auto result = lb_->peekAnotherHost(nullptr);
+  EXPECT_EQ(result, nullptr);
+}
+
+TEST_F(PeakEwmaLoadBalancerTest, LifetimeCallbacks) {
+  // Test the lifetimeCallbacks method
+  auto callbacks = lb_->lifetimeCallbacks();
+  EXPECT_FALSE(callbacks.has_value());
+}
+
+TEST_F(PeakEwmaLoadBalancerTest, SelectExistingConnection) {
+  // Test the selectExistingConnection method
+  std::vector<uint8_t> hash_key;
+  auto result = lb_->selectExistingConnection(nullptr, *hosts_[0], hash_key);
+  EXPECT_FALSE(result.has_value());
 }
 
 } // namespace

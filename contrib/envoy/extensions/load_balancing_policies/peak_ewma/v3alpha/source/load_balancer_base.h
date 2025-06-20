@@ -4,6 +4,7 @@
 #include "envoy/upstream/upstream.h"
 
 #include "source/common/common/assert.h"
+#include "source/common/common/logger.h"
 
 namespace Envoy {
 namespace Extensions {
@@ -11,7 +12,8 @@ namespace LoadBalancingPolicies {
 namespace PeakEwma {
 
 // A minimal, self-contained base class for the Peak EWMA load balancer.
-class LoadBalancerBase : public Upstream::LoadBalancer {
+class LoadBalancerBase : public Upstream::LoadBalancer, 
+                         public Logger::Loggable<Logger::Id::upstream> {
 public:
   // We only need the constructor from the original LoadBalancerBase.
   // CORRECTED: The second parameter is now const Upstream::PrioritySet*

@@ -1,38 +1,29 @@
-# FILE: contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/test/BUILD
+# In contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/test/BUILD
 
 load(
     "//bazel:envoy_build_system.bzl",
     "envoy_cc_test",
-    "envoy_package",
+    "envoy_contrib_package",
 )
 
 licenses(["notice"])  # Apache 2
 
-envoy_package()
+envoy_contrib_package()
 
-# Using the fundamental C++ test rule to avoid complex macro issues.
-# This rule is guaranteed to exist in the loaded .bzl file.
 envoy_cc_test(
     name = "peak_ewma_lb_test",
     srcs = ["peak_ewma_lb_test.cc"],
-    # The repository attribute is important for linking contrib code correctly.
-    repository = "@envoy",
     deps = [
-        # Link against the implementation library being tested.
+        # The library containing the load balancer implementation under test.
         "//contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/source:peak_ewma_lb_lib",
-
-        # Corrected dependency to provide load_balancer_impl.h
-        "//source/extensions/load_balancing_policies/common:load_balancer_lib",
-
-        # All other necessary dependencies for mocks and utilities.
-        "//source/common/upstream:upstream_lib",
+        
+        # Dependencies for mocks and test utilities used in the test file.
+        "//source/common/network:address_lib", # For Ipv4Instance
+        "//test/common/stats:stat_test_utility_lib",
         "//test/mocks:common_lib",
+        "//test/mocks/network:network_mocks",
         "//test/mocks/runtime:runtime_mocks",
-        "//test/mocks/upstream:cluster_info_mocks",
-        "//test/mocks/upstream:host_mocks",
-        "//test/mocks/upstream:priority_set_mocks",
-        "//test/test_common:test_runtime_lib",
-        "//test/test_common:utility_lib",
-        "//contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha:pkg_cc_proto",
+        "//test/mocks/upstream:upstream_mocks",
+        "//test/test_common:status_utility_lib", # For ASSERT_OK
     ],
 )
