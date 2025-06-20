@@ -12,27 +12,60 @@ option (xds.annotations.v3.file_status).work_in_progress = true; // CHANGED FROM
 
 // [#protodoc-title: Peak EWMA Load Balancer Configuration]
 // Configuration for the Peak EWMA (Exponentially Weighted Moving Average) load balancing policy.
-// This policy selects endpoints based on a cost function: `Cost = RTT_peak_ewma * (active_requests + 1)`.
-// It is designed to be sensitive to latency spikes by adjusting the RTT EWMA's responsiveness.
-// This load balancer operates on hosts not currently ejected by outlier detection.
+//
+// This policy implements a latency-aware variant of the Power of Two Choices (P2C) algorithm.
+// It selects the best host from two randomly chosen candidates based on a cost function:
+// `Cost = RTT_peak_ewma * (active_requests + 1)`.
+//
+// The Peak EWMA algorithm is designed to:
+// - Automatically route traffic away from slow or overloaded hosts
+// - Adapt to changing host performance without manual configuration
+// - Provide low-latency request routing with O(1) host selection complexity
+// - Work effectively in heterogeneous environments with varying host capabilities
+//
+// RTT measurements are automatically collected from HTTP request timing and used to update
+// the EWMA for each host. This provides real-time performance feedback for routing decisions.
+//
+// Important: This load balancer only considers latency and load when selecting hosts. It does
+// not handle host health or error responses - these should be managed by Envoy's health checking
+// and outlier detection systems. Peak EWMA operates on the pool of healthy hosts as determined
+// by these other systems.
+//
 // [#extension: envoy.load_balancing_policies.peak_ewma]
 message PeakEwma {
   // Corrected message-level option
   option (xds.annotations.v3.message_status).work_in_progress = true; // CHANGED FROM udpa.annotations.message_status
 
-  // The smoothing factor for the RTT EWMA. This value determines how responsive the EWMA is to
-  // new RTT samples. A lower value makes the EWMA more sensitive to recent RTT changes,
-  // thereby emphasizing peak latencies.
-  // It must be a value greater than 0.0 and less than 1.0.
-  // For example, a value of 0.1 would give 10% weight to the new RTT sample and 90% to the
-  // existing EWMA.
+  // The smoothing factor for the RTT EWMA calculation. This determines how responsive the EWMA 
+  // is to new RTT samples versus historical values.
+  //
+  // The EWMA update formula is:
+  // `new_ewma = (sample_rtt * rtt_smoothing_factor) + (current_ewma * (1 - rtt_smoothing_factor))`
+  //
+  // Typical values:
+  // - 0.1: More sensitive to recent latency changes, good for detecting performance degradation
+  // - 0.5: Balanced approach, suitable for most environments  
+  // - 0.9: More stable, less sensitive to temporary spikes
+  //
+  // Must be greater than 0.0 and less than 1.0. For environments with frequent latency spikes,
+  // lower values (0.1-0.3) are recommended to ensure quick detection and response.
   double rtt_smoothing_factor = 1 [(validate.rules).double = {gt: 0.0, lt: 1.0}];
 
-  // The default RTT value to use for hosts that have not yet been measured or have no
-  // active requests. This ensures that new or temporarily idle hosts have a baseline cost.
-  // It's recommended to set this to a conservatively high estimate of RTT for your upstream
-  // services (e.g., 1000ms, but depends on the specific services).
-  // This field is required.
+  // The default RTT value used for hosts with no measurement history. This provides a baseline
+  // cost for new hosts entering the cluster or hosts that have been idle.
+  //
+  // The default RTT affects load balancing behavior:
+  // - Too low: New hosts may receive excessive traffic before their true performance is measured
+  // - Too high: New hosts may be unfairly penalized and receive little traffic
+  //
+  // Recommended values:
+  // - Local/same-zone services: 1-10ms  
+  // - Cross-zone services: 10-50ms
+  // - Cross-region services: 50-200ms
+  // - Internet/external services: 100ms-1s
+  //
+  // This should represent a conservative (slightly pessimistic) estimate of expected RTT for
+  // your environment. The EWMA will quickly converge to actual measured values as traffic flows.
   google.protobuf.Duration default_rtt = 2 [(validate.rules).duration = {
     required: true,
     gt {nanos: 0}
