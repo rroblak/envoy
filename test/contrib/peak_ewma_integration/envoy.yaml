@@ -1,0 +1,89 @@
+static_resources:
+  listeners:
+  - name: listener_0
+    address:
+      socket_address:
+        address: 0.0.0.0
+        port_value: 8080
+    filter_chains:
+    - filters:
+      - name: envoy.filters.network.http_connection_manager
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+          stat_prefix: ingress_http
+          codec_type: AUTO
+          route_config:
+            name: local_route
+            virtual_hosts:
+            - name: local_service
+              domains: ["*"]
+              routes:
+              - match:
+                  prefix: "/"
+                route:
+                  cluster: test_cluster
+          http_filters:
+          - name: envoy.filters.http.router
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+
+  clusters:
+  - name: test_cluster
+    type: STRICT_DNS
+    dns_lookup_family: V4_ONLY
+    load_assignment:
+      cluster_name: test_cluster
+      endpoints:
+      - lb_endpoints:
+        # Fast upstream (nginx on port 8081)
+        - endpoint:
+            address:
+              socket_address:
+                address: upstream_fast
+                port_value: 80
+        # Medium upstream (nginx on port 8082)  
+        - endpoint:
+            address:
+              socket_address:
+                address: upstream_medium
+                port_value: 80
+        # Slow upstream (nginx with artificial delay on port 8083)
+        - endpoint:
+            address:
+              socket_address:
+                address: upstream_slow
+                port_value: 80
+    
+    # Configure Peak EWMA load balancing
+    load_balancing_policy:
+      policies:
+      - typed_extension_config:
+          name: envoy.load_balancing_policies.peak_ewma
+          typed_config:
+            "@type": type.googleapis.com/envoy.extensions.load_balancing_policies.peak_ewma.v3alpha.PeakEwma
+            rtt_smoothing_factor: 0.1  # Sensitive to latency changes
+            default_rtt: 50ms          # Conservative default
+    
+    # Health checking to ensure we only route to healthy hosts
+    health_checks:
+    - timeout: 1s
+      interval: 5s
+      interval_jitter: 1s
+      http_health_check:
+        path: "/health"
+        expected_statuses:
+        - 200
+        - 404  # Accept 404 since test servers might not have /health endpoint
+    
+    # Outlier detection to handle hosts with high error rates
+    outlier_detection:
+      consecutive_5xx: 3
+      interval: 10s
+      base_ejection_time: 10s
+      max_ejection_percent: 50
+
+admin:
+  address:
+    socket_address:
+      address: 0.0.0.0
+      port_value: 9901

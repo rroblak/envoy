@@ -1,0 +1,48 @@
+version: '3.8'
+
+services:
+  # Fast upstream server (normal nginx)
+  upstream_fast:
+    image: nginx:alpine
+    ports:
+      - "8081:80"
+    volumes:
+      - ./nginx-fast.conf:/etc/nginx/nginx.conf
+    hostname: upstream_fast
+
+  # Medium upstream server (nginx with small delay) 
+  upstream_medium:
+    image: nginx:alpine
+    ports:
+      - "8082:80"
+    volumes:
+      - ./nginx-medium.conf:/etc/nginx/nginx.conf
+    hostname: upstream_medium
+
+  # Slow upstream server (nginx with artificial delay)
+  upstream_slow:
+    image: nginx:alpine
+    ports:
+      - "8083:80"
+    volumes:
+      - ./nginx-slow.conf:/etc/nginx/nginx.conf
+    hostname: upstream_slow
+
+  # Envoy proxy with Peak EWMA
+  envoy:
+    image: envoy-peak-ewma:local
+    ports:
+      - "8080:8080"  # Main proxy port
+      - "9901:9901"  # Admin interface
+    volumes:
+      - ./envoy.yaml:/etc/envoy/envoy.yaml
+    command: /usr/local/bin/envoy -c /etc/envoy/envoy.yaml --log-level info
+    depends_on:
+      - upstream_fast
+      - upstream_medium  
+      - upstream_slow
+    hostname: envoy
+
+networks:
+  default:
+    driver: bridge

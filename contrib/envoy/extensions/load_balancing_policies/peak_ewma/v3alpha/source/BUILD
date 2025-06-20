@@ -29,6 +29,7 @@ envoy_cc_library(
         "load_balancer_base.h",
     ],
     repository = "@envoy",
+    visibility = ["//test:__subpackages__"],
     deps = [
         # REMOVED the forbidden dependency on //source/extensions/...:load_balancer_lib
         "//source/common/common:utility_lib",
