@@ -27,3 +27,26 @@ envoy_cc_test(
         "//test/test_common:status_utility_lib", # For ASSERT_OK
     ],
 )
+
+envoy_cc_test(
+    name = "ewma_test",
+    srcs = ["ewma_test.cc"],
+    deps = [
+        "//contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/source:peak_ewma_lb_lib",
+    ],
+)
+
+envoy_cc_test(
+    name = "config_test",
+    srcs = ["config_test.cc"],
+    deps = [
+        "//contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/source:peak_ewma_lb_lib",
+        "//contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha:pkg_cc_proto",
+        "//source/common/protobuf:utility_lib",
+        "//test/common/stats:stat_test_utility_lib",
+        "//test/mocks/runtime:runtime_mocks",
+        "//test/mocks/server:factory_context_mocks",
+        "//test/mocks/upstream:upstream_mocks",
+        "//test/test_common:utility_lib",
+    ],
+)

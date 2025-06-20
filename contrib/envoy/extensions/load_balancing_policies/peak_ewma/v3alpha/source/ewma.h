@@ -2,6 +2,8 @@
 
 #include <cmath> // For std::isnan
 
+#include "source/common/common/assert.h"
+
 namespace Envoy {
 namespace Extensions {
 namespace LoadBalancingPolicies {

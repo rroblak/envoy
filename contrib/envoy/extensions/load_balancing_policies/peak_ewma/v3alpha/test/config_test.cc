@@ -1,0 +1,211 @@
+#include "contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/source/config.h"
+
+#include "envoy/registry/registry.h"
+#include "envoy/upstream/load_balancer.h"
+
+#include "source/common/protobuf/utility.h"
+
+#include "test/common/stats/stat_test_utility.h"
+#include "test/mocks/common.h"
+#include "test/mocks/runtime/mocks.h"
+#include "test/mocks/server/factory_context.h"
+#include "test/mocks/upstream/cluster_info.h"
+#include "test/mocks/upstream/priority_set.h"
+#include "test/test_common/utility.h"
+
+#include "contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/peak_ewma.pb.h"
+
+#include "gtest/gtest.h"
+
+using testing::NiceMock;
+using testing::Return;
+using testing::ReturnRef;
+
+namespace Envoy {
+namespace Extensions {
+namespace LoadBalancingPolicies {
+namespace PeakEwma {
+namespace {
+
+class PeakEwmaConfigTest : public ::testing::Test {
+public:
+  PeakEwmaConfigTest()
+      : stat_names_(store_.symbolTable()),
+        stats_(stat_names_, *store_.rootScope()) {
+    ON_CALL(*cluster_info_, statsScope()).WillByDefault(ReturnRef(*store_.rootScope()));
+  }
+
+  Stats::TestUtil::TestStore store_;
+  Upstream::ClusterLbStatNames stat_names_;
+  Upstream::ClusterLbStats stats_;
+  std::shared_ptr<NiceMock<Upstream::MockClusterInfo>> cluster_info_{
+      std::make_shared<NiceMock<Upstream::MockClusterInfo>>()};
+  NiceMock<Upstream::MockPrioritySet> priority_set_;
+  NiceMock<Runtime::MockLoader> runtime_;
+  NiceMock<MockRandomGenerator> random_;
+  MockTimeSystem time_source_;
+};
+
+TEST_F(PeakEwmaConfigTest, FactoryRegistration) {
+  // Verify that the factory is properly registered
+  auto factory = Registry::FactoryRegistry<Upstream::TypedLoadBalancerFactory>::getFactory(
+      "envoy.load_balancing_policies.peak_ewma");
+  EXPECT_NE(factory, nullptr);
+  EXPECT_EQ(factory->name(), "envoy.load_balancing_policies.peak_ewma");
+}
+
+TEST_F(PeakEwmaConfigTest, CreateEmptyConfigProto) {
+  PeakEwmaLoadBalancerFactory factory;
+  auto proto = factory.createEmptyConfigProto();
+  EXPECT_NE(proto, nullptr);
+  
+  // Verify it's the right type
+  const auto* typed_proto = dynamic_cast<
+      const envoy::extensions::load_balancing_policies::peak_ewma::v3alpha::PeakEwma*>(proto.get());
+  EXPECT_NE(typed_proto, nullptr);
+}
+
+TEST_F(PeakEwmaConfigTest, LoadConfigWithDefaults) {
+  PeakEwmaLoadBalancerFactory factory;
+  NiceMock<Server::Configuration::MockServerFactoryContext> context;
+  
+  // Create a minimal config proto
+  envoy::extensions::load_balancing_policies::peak_ewma::v3alpha::PeakEwma proto_config;
+  proto_config.mutable_default_rtt()->set_seconds(1);
+  proto_config.set_rtt_smoothing_factor(0.5);
+  
+  auto result = factory.loadConfig(context, proto_config);
+  EXPECT_TRUE(result.ok());
+  EXPECT_NE(result.value(), nullptr);
+  
+  // Verify the config holds the proto
+  const auto* config = dynamic_cast<const PeakEwmaLbConfig*>(result.value().get());
+  EXPECT_NE(config, nullptr);
+  EXPECT_EQ(config->proto_config_.rtt_smoothing_factor(), 0.5);
+  EXPECT_EQ(config->proto_config_.default_rtt().seconds(), 1);
+}
+
+TEST_F(PeakEwmaConfigTest, LoadConfigWithCustomValues) {
+  PeakEwmaLoadBalancerFactory factory;
+  NiceMock<Server::Configuration::MockServerFactoryContext> context;
+  
+  // Create config with custom values
+  envoy::extensions::load_balancing_policies::peak_ewma::v3alpha::PeakEwma proto_config;
+  proto_config.mutable_default_rtt()->set_nanos(500000000);  // 0.5 seconds
+  proto_config.set_rtt_smoothing_factor(0.8);
+  
+  auto result = factory.loadConfig(context, proto_config);
+  EXPECT_TRUE(result.ok());
+  
+  const auto* config = dynamic_cast<const PeakEwmaLbConfig*>(result.value().get());
+  EXPECT_NE(config, nullptr);
+  EXPECT_EQ(config->proto_config_.rtt_smoothing_factor(), 0.8);
+  EXPECT_EQ(config->proto_config_.default_rtt().nanos(), 500000000);
+}
+
+TEST_F(PeakEwmaConfigTest, CreateThreadAwareLoadBalancer) {
+  PeakEwmaLoadBalancerFactory factory;
+  NiceMock<Server::Configuration::MockServerFactoryContext> context;
+  
+  // Create config
+  envoy::extensions::load_balancing_policies::peak_ewma::v3alpha::PeakEwma proto_config;
+  proto_config.mutable_default_rtt()->set_seconds(1);
+  proto_config.set_rtt_smoothing_factor(0.5);
+  
+  auto config_result = factory.loadConfig(context, proto_config);
+  EXPECT_TRUE(config_result.ok());
+  
+  // Create the thread-aware load balancer
+  auto talb = factory.create(OptRef<const Upstream::LoadBalancerConfig>(config_result.value().get()),
+                            *cluster_info_, priority_set_, runtime_, random_, time_source_);
+  
+  EXPECT_NE(talb, nullptr);
+  
+  // Initialize the load balancer
+  auto status = talb->initialize();
+  EXPECT_TRUE(status.ok());
+  
+  // Get the factory and create a load balancer instance
+  auto lb_factory = talb->factory();
+  EXPECT_NE(lb_factory, nullptr);
+  
+  Upstream::LoadBalancerParams params{priority_set_, nullptr};
+  auto lb = lb_factory->create(params);
+  EXPECT_NE(lb, nullptr);
+  
+  // The load balancer should be of the correct type
+  const auto* peak_ewma_lb = dynamic_cast<const PeakEwmaLoadBalancer*>(lb.get());
+  EXPECT_NE(peak_ewma_lb, nullptr);
+}
+
+TEST_F(PeakEwmaConfigTest, InvalidConfigType) {
+  PeakEwmaLoadBalancerFactory factory;
+  NiceMock<Server::Configuration::MockServerFactoryContext> context;
+  
+  // Try to load a different proto type
+  google::protobuf::Empty wrong_proto;
+  
+  EXPECT_THROW(factory.loadConfig(context, wrong_proto), std::bad_cast);
+}
+
+TEST_F(PeakEwmaConfigTest, CreateWithNullConfig) {
+  PeakEwmaLoadBalancerFactory factory;
+  
+  // Should not crash when creating with null config
+  EXPECT_DEATH(factory.create(OptRef<const Upstream::LoadBalancerConfig>(),
+                             *cluster_info_, priority_set_, runtime_, random_, time_source_),
+               "Invalid config passed to PeakEwmaLoadBalancerFactory::create");
+}
+
+TEST_F(PeakEwmaConfigTest, ConfigValidation) {
+  // Test that extreme values are handled
+  envoy::extensions::load_balancing_policies::peak_ewma::v3alpha::PeakEwma proto_config;
+  
+  // Very small smoothing factor
+  proto_config.set_rtt_smoothing_factor(0.01);
+  proto_config.mutable_default_rtt()->set_nanos(1000000);  // 1ms
+  
+  PeakEwmaLbConfig config(proto_config);
+  EXPECT_EQ(config.proto_config_.rtt_smoothing_factor(), 0.01);
+  EXPECT_EQ(config.proto_config_.default_rtt().nanos(), 1000000);
+  
+  // Very large smoothing factor (close to 1.0)
+  proto_config.set_rtt_smoothing_factor(0.99);
+  proto_config.mutable_default_rtt()->set_seconds(10);
+  
+  PeakEwmaLbConfig config2(proto_config);
+  EXPECT_EQ(config2.proto_config_.rtt_smoothing_factor(), 0.99);
+  EXPECT_EQ(config2.proto_config_.default_rtt().seconds(), 10);
+}
+
+TEST_F(PeakEwmaConfigTest, MultipleLoadBalancerInstances) {
+  PeakEwmaLoadBalancerFactory factory;
+  NiceMock<Server::Configuration::MockServerFactoryContext> context;
+  
+  envoy::extensions::load_balancing_policies::peak_ewma::v3alpha::PeakEwma proto_config;
+  proto_config.mutable_default_rtt()->set_seconds(1);
+  proto_config.set_rtt_smoothing_factor(0.5);
+  
+  auto config_result = factory.loadConfig(context, proto_config);
+  EXPECT_TRUE(config_result.ok());
+  
+  auto talb = factory.create(OptRef<const Upstream::LoadBalancerConfig>(config_result.value().get()),
+                            *cluster_info_, priority_set_, runtime_, random_, time_source_);
+  
+  auto lb_factory = talb->factory();
+  
+  // Create multiple load balancer instances from the same factory
+  Upstream::LoadBalancerParams params{priority_set_, nullptr};
+  auto lb1 = lb_factory->create(params);
+  auto lb2 = lb_factory->create(params);
+  
+  EXPECT_NE(lb1, nullptr);
+  EXPECT_NE(lb2, nullptr);
+  EXPECT_NE(lb1.get(), lb2.get());  // Should be different instances
+}
+
+} // namespace
+} // namespace PeakEwma
+} // namespace LoadBalancingPolicies
+} // namespace Extensions
+} // namespace Envoy
