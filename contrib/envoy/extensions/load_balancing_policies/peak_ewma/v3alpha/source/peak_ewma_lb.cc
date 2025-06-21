@@ -20,7 +20,7 @@ PeakEwmaHostStats::PeakEwmaHostStats(double smoothing_factor, double default_rtt
                                      Stats::Scope& scope, const Upstream::Host& host)
     : rtt_ewma_(smoothing_factor, default_rtt),
       cost_stat_(scope.gaugeFromString(
-          fmt::format("peak_ewma.{}.cost", host.address()->asString()),
+          "peak_ewma." + host.address()->asString() + ".cost",
           Stats::Gauge::ImportMode::NeverImport)) {}
 
 void PeakEwmaHostStats::recordRttSample(std::chrono::milliseconds rtt) {
@@ -108,24 +108,34 @@ PeakEwmaLoadBalancer::chooseHost(ABSL_ATTRIBUTE_UNUSED Upstream::LoadBalancerCon
   }
 
   const size_t host_count = hosts_to_consider.size();
-  const size_t first_choice = random_.random() % host_count;
-  size_t second_choice;
   
-  int attempts = 0;
-  do {
-    second_choice = random_.random() % host_count;
-    ++attempts;
-  } while (second_choice == first_choice && attempts < 10);
-  
-  if (second_choice == first_choice) {
-    second_choice = (first_choice + 1) % host_count;
-  }
+  // Optimized P2C: Use single random call for both choices and tie-breaking
+  const uint64_t random_value = random_.random();
+  const size_t first_choice = random_value % host_count;
+  const size_t second_choice = (first_choice + 1 + (random_value >> 16) % (host_count - 1)) % host_count;
 
   const auto& host1 = hosts_to_consider[first_choice];
   const auto& host2 = hosts_to_consider[second_choice];
 
-  const double cost1 = getHostCost(host1);
-  const double cost2 = getHostCost(host2);
+  // Optimized: Reduce hash map lookups by batching both cost calculations
+  auto it1 = host_stats_map_.find(host1);
+  auto it2 = host_stats_map_.find(host2);
+  
+  const double cost1 = (it1 != host_stats_map_.end()) 
+    ? it1->second.getEwmaRttMs() * (static_cast<double>(host1->stats().rq_active_.value()) + 1.0)
+    : std::numeric_limits<double>::max();
+  
+  const double cost2 = (it2 != host_stats_map_.end()) 
+    ? it2->second.getEwmaRttMs() * (static_cast<double>(host2->stats().rq_active_.value()) + 1.0)
+    : std::numeric_limits<double>::max();
+  
+  // Update stats if lookups succeeded
+  if (it1 != host_stats_map_.end()) {
+    it1->second.setComputedCostStat(cost1);
+  }
+  if (it2 != host_stats_map_.end()) {
+    it2->second.setComputedCostStat(cost2);
+  }
 
   Upstream::HostConstSharedPtr selected_host;
   if (cost1 < cost2) {
@@ -133,7 +143,8 @@ PeakEwmaLoadBalancer::chooseHost(ABSL_ATTRIBUTE_UNUSED Upstream::LoadBalancerCon
   } else if (cost2 < cost1) {
     selected_host = host2;
   } else {
-    selected_host = (random_.random() % 2 == 0) ? host1 : host2;
+    // Use high bit of random value for tie-breaking instead of new random call
+    selected_host = (random_value & 0x8000000000000000ULL) ? host1 : host2;
   }
 
   return {selected_host};
