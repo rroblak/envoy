@@ -108,10 +108,9 @@ TEST_F(PeakEwmaLoadBalancerTest, P2CSelectsHostWithLowerCost) {
   setHostStats(hosts_[1], std::chrono::milliseconds(20), 2);   // cost = 20 * 3 = 60
   setHostStats(hosts_[2], std::chrono::milliseconds(50), 10);  // cost = 50 * 11 = 550
 
-  // Force P2C to select hosts_[0] and hosts_[1]
-  EXPECT_CALL(random_, random())
-      .WillOnce(Return(0))  // first_choice = 0 (hosts_[0])
-      .WillOnce(Return(1)); // second_choice = 1 (hosts_[1])
+  // Force P2C to select hosts_[0] and hosts_[1] using optimized single random call
+  // random_value = 0: first_choice = 0 % 3 = 0, second_choice = (0 + 1 + 0) % 3 = 1
+  EXPECT_CALL(random_, random()).WillOnce(Return(0));
 
   auto result = lb_->chooseHost(nullptr);
   // Should select hosts_[1] because it has lower cost (60 < 200)
@@ -124,24 +123,20 @@ TEST_F(PeakEwmaLoadBalancerTest, P2CTieBreaking) {
   setHostStats(hosts_[2], std::chrono::milliseconds(100), 5); // cost = 100 * 6 = 600
 
   // Force P2C to select hosts_[0] and hosts_[1] (both have same cost)
-  EXPECT_CALL(random_, random())
-      .WillOnce(Return(0))  // first_choice = 0 (hosts_[0])
-      .WillOnce(Return(1))  // second_choice = 1 (hosts_[1])
-      .WillOnce(Return(0)); // tie-breaking: select first host
+  // random_value = 0: high bit is 0, so selects host2 (hosts_[1])
+  EXPECT_CALL(random_, random()).WillOnce(Return(0));
 
   auto result = lb_->chooseHost(nullptr);
-  // Should select hosts_[0] because tie-breaking random returned 0
-  EXPECT_EQ(result.host, hosts_[0]);
+  // Should select hosts_[1] because high bit is 0
+  EXPECT_EQ(result.host, hosts_[1]);
 
   // Test the other tie-breaking case
-  EXPECT_CALL(random_, random())
-      .WillOnce(Return(0))  // first_choice = 0 (hosts_[0])
-      .WillOnce(Return(1))  // second_choice = 1 (hosts_[1])
-      .WillOnce(Return(1)); // tie-breaking: select second host
+  // random_value with high bit set: selects host1 (hosts_[0])
+  EXPECT_CALL(random_, random()).WillOnce(Return(0x8000000000000000ULL));
 
   result = lb_->chooseHost(nullptr);
-  // Should select hosts_[1] because tie-breaking random returned 1
-  EXPECT_EQ(result.host, hosts_[1]);
+  // Should select hosts_[0] because high bit is 1
+  EXPECT_EQ(result.host, hosts_[0]);
 }
 
 TEST_F(PeakEwmaLoadBalancerTest, P2CSingleHost) {
@@ -168,9 +163,8 @@ TEST_F(PeakEwmaLoadBalancerTest, NoHealthyHosts) {
   setHostStats(hosts_[2], std::chrono::milliseconds(300), 3);
 
   // Should fall back to all hosts and use P2C among them
-  EXPECT_CALL(random_, random())
-      .WillOnce(Return(0))  // first_choice = 0 (hosts_[0])
-      .WillOnce(Return(1)); // second_choice = 1 (hosts_[1])
+  // random_value = 0: first_choice = 0, second_choice = 1
+  EXPECT_CALL(random_, random()).WillOnce(Return(0));
 
   auto result = lb_->chooseHost(nullptr);
   // Should select hosts_[0] because it has lower cost (200 < 400)
@@ -213,9 +207,8 @@ TEST_F(PeakEwmaLoadBalancerTest, CostCalculation) {
   setHostStats(hosts_[2], std::chrono::milliseconds(25), 3);   // cost = 25 * 4 = 100
 
   // Force selection of hosts_[0] vs hosts_[2]
-  EXPECT_CALL(random_, random())
-      .WillOnce(Return(0))  // first_choice = 0 (hosts_[0])
-      .WillOnce(Return(2)); // second_choice = 2 (hosts_[2])
+  // random_value = 65539: first_choice = 0, second_choice = 2
+  EXPECT_CALL(random_, random()).WillOnce(Return(65539));
 
   auto result = lb_->chooseHost(nullptr);
   // Should select hosts_[0] because it has lower cost (50 < 100)
@@ -228,23 +221,20 @@ TEST_F(PeakEwmaLoadBalancerTest, P2CRandomSelectionMocked) {
   setHostStats(hosts_[1], std::chrono::milliseconds(100), 1);  // cost = 200  
   setHostStats(hosts_[2], std::chrono::milliseconds(100), 1);  // cost = 200
 
-  // Test first combination: hosts_[0] vs hosts_[1], tie-break to hosts_[0]
-  EXPECT_CALL(random_, random())
-      .WillOnce(Return(0))  // first_choice = 0 (hosts_[0])
-      .WillOnce(Return(1))  // second_choice = 1 (hosts_[1])
-      .WillOnce(Return(0)); // tie-breaking: select first host
+  // Test first combination: hosts_[0] vs hosts_[1], tie-break to hosts_[1] (high bit = 0)
+  // random_value = 0: first_choice = 0, second_choice = 1, high bit = 0 -> select host2
+  EXPECT_CALL(random_, random()).WillOnce(Return(0));
 
   auto result1 = lb_->chooseHost(nullptr);
-  EXPECT_EQ(result1.host, hosts_[0]);
+  EXPECT_EQ(result1.host, hosts_[1]);
 
-  // Test second combination: hosts_[1] vs hosts_[2], tie-break to hosts_[2]
-  EXPECT_CALL(random_, random())
-      .WillOnce(Return(1))  // first_choice = 1 (hosts_[1])
-      .WillOnce(Return(2))  // second_choice = 2 (hosts_[2])
-      .WillOnce(Return(1)); // tie-breaking: select second host
+  // Test second combination: first_choice = 1 (hosts_[1]), second_choice = 0 (hosts_[0])
+  // With equal costs and high_bit = 1, should select first choice = hosts_[1]
+  // random_value = 0x8000000000010001ULL gives: first_choice=1, second_choice=0, high_bit=1
+  EXPECT_CALL(random_, random()).WillOnce(Return(0x8000000000010001ULL));
 
   auto result2 = lb_->chooseHost(nullptr);
-  EXPECT_EQ(result2.host, hosts_[2]);
+  EXPECT_EQ(result2.host, hosts_[1]);
 }
 
 TEST_F(PeakEwmaLoadBalancerTest, HealthyPanicMode) {
@@ -257,9 +247,8 @@ TEST_F(PeakEwmaLoadBalancerTest, HealthyPanicMode) {
   setHostStats(hosts_[1], std::chrono::milliseconds(200), 2);
   
   // Force selection between hosts_[0] and hosts_[1]
-  EXPECT_CALL(random_, random())
-      .WillOnce(Return(0))  // first_choice = 0 (hosts_[0])
-      .WillOnce(Return(1)); // second_choice = 1 (hosts_[1])
+  // random_value = 0: first_choice = 0, second_choice = 1
+  EXPECT_CALL(random_, random()).WillOnce(Return(0));
 
   auto result = lb_->chooseHost(nullptr);
   // Should select hosts_[0] due to lower cost and should have incremented panic stat
@@ -281,9 +270,8 @@ TEST_F(PeakEwmaLoadBalancerTest, HostNotInStatsMap) {
   setHostStats(hosts_[1], std::chrono::milliseconds(100), 1);
   
   // Force selection of orphan_host vs hosts_[1]
-  EXPECT_CALL(random_, random())
-      .WillOnce(Return(0))  // first_choice = 0 (orphan_host)
-      .WillOnce(Return(1)); // second_choice = 1 (hosts_[1])
+  // random_value = 0: first_choice = 0 (orphan_host), second_choice = 1 (hosts_[1])
+  EXPECT_CALL(random_, random()).WillOnce(Return(0));
 
   auto result = lb_->chooseHost(nullptr);
   // Should select hosts_[1] because orphan_host has max cost
