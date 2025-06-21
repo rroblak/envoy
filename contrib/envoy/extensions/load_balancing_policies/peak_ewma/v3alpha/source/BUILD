@@ -12,13 +12,11 @@ envoy_contrib_package()
 envoy_cc_library(
     name = "peak_ewma_lb_lib",
     srcs = [
-        "config.cc",
         "peak_ewma_lb.cc",
         "peak_ewma_filter.cc",
         "peak_ewma_filter_config.cc",
     ],
     hdrs = [
-        "config.h",
         "ewma.h",
         "peak_ewma_lb.h",
         "peak_ewma_filter.h",
@@ -26,7 +24,7 @@ envoy_cc_library(
         "load_balancer_base.h",
     ],
     repository = "@envoy",
-    visibility = ["//test:__subpackages__"],
+    visibility = ["//contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/test:__pkg__"],
     deps = [
         "//source/common/common:utility_lib",
         "//source/common/config:utility_lib",
@@ -43,5 +41,8 @@ envoy_cc_contrib_extension(
     hdrs = ["config.h"],
     deps = [
         ":peak_ewma_lb_lib",
+        "//envoy/registry",
+        "//source/extensions/load_balancing_policies/common:factory_base",
+        "//contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha:pkg_cc_proto",
     ],
 )

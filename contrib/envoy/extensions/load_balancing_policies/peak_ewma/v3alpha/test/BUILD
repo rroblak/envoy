@@ -41,6 +41,7 @@ envoy_cc_test(
     srcs = ["config_test.cc"],
     deps = [
         "//contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/source:peak_ewma_lb_lib",
+        "//contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/source:config",
         "//contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha:pkg_cc_proto",
         "//source/common/protobuf:utility_lib",
         "//test/common/stats:stat_test_utility_lib",
