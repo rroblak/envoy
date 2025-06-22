@@ -39,11 +39,13 @@ void PeakEwmaHostStats::recordRttSample(std::chrono::milliseconds rtt) {
 }
 
 PeakEwmaLoadBalancer::PeakEwmaLoadBalancer(
-    const Upstream::LoadBalancerParams& params, const Upstream::ClusterInfo& cluster_info,
+    const Upstream::PrioritySet& priority_set, const Upstream::PrioritySet* local_priority_set,
     Upstream::ClusterLbStats& stats, Runtime::Loader& runtime, Random::RandomGenerator& random,
+    uint32_t healthy_panic_threshold, const Upstream::ClusterInfo& cluster_info,
     TimeSource& time_source,
     const envoy::extensions::load_balancing_policies::peak_ewma::v3alpha::PeakEwma& config)
-    : LoadBalancerBase(params.priority_set, params.local_priority_set, stats, runtime, random),
+    : ZoneAwareLoadBalancerBase(priority_set, local_priority_set, stats, runtime, random,
+                                healthy_panic_threshold, absl::nullopt),
       cluster_info_(cluster_info),
       time_source_(time_source),
       config_proto_(config),
@@ -52,13 +54,13 @@ PeakEwmaLoadBalancer::PeakEwmaLoadBalancer(
       tau_nanos_(config_proto_.has_decay_time() ? 
           DurationUtil::durationToMilliseconds(config_proto_.decay_time()) * 1000000LL :
           kDefaultDecayTimeSeconds * 1000000000LL) {
-  member_update_cb_handle_ = params.priority_set.addMemberUpdateCb(
+  member_update_cb_handle_ = priority_set.addMemberUpdateCb(
       [this](const Upstream::HostVector& hosts_added, const Upstream::HostVector& hosts_removed) -> absl::Status {
         onHostSetUpdate(hosts_added, hosts_removed);
         return absl::OkStatus();
       });
 
-  for (const auto& host_set : params.priority_set.hostSetsPerPriority()) {
+  for (const auto& host_set : priority_set.hostSetsPerPriority()) {
     onHostSetUpdate(host_set->hosts(), {});
   }
 }
@@ -150,8 +152,8 @@ PeakEwmaLoadBalancer::calculateBatchCosts(const Upstream::HostVector& hosts) {
   return results;
 }
 
-Upstream::HostSelectionResponse
-PeakEwmaLoadBalancer::chooseHost(ABSL_ATTRIBUTE_UNUSED Upstream::LoadBalancerContext* context) {
+Upstream::HostConstSharedPtr
+PeakEwmaLoadBalancer::chooseHostOnce(ABSL_ATTRIBUTE_UNUSED Upstream::LoadBalancerContext* context) {
   const auto& host_sets = priority_set_.hostSetsPerPriority();
   const Upstream::HostSet* current_host_set = nullptr;
   for (const auto& host_set : host_sets) {
@@ -162,11 +164,10 @@ PeakEwmaLoadBalancer::chooseHost(ABSL_ATTRIBUTE_UNUSED Upstream::LoadBalancerCon
   }
 
   if (current_host_set == nullptr) {
-    stats_.lb_healthy_panic_.inc();
     if (!host_sets.empty() && host_sets[0] && !host_sets[0]->hosts().empty()) {
       current_host_set = host_sets[0].get();
     } else {
-      return {nullptr};
+      return nullptr;
     }
   }
 
@@ -175,11 +176,11 @@ PeakEwmaLoadBalancer::chooseHost(ABSL_ATTRIBUTE_UNUSED Upstream::LoadBalancerCon
                                       : current_host_set->healthyHosts();
 
   if (hosts_to_consider.empty()) {
-    return {nullptr};
+    return nullptr;
   }
 
   if (hosts_to_consider.size() == 1) {
-    return {hosts_to_consider[0]};
+    return hosts_to_consider[0];
   }
 
   const size_t host_count = hosts_to_consider.size();
@@ -226,26 +227,12 @@ PeakEwmaLoadBalancer::chooseHost(ABSL_ATTRIBUTE_UNUSED Upstream::LoadBalancerCon
   const bool prefer_host1 = costs_equal ? 
     (random_value & 0x8000000000000000ULL) != 0 : cost1 < cost2;
   
-  Upstream::HostConstSharedPtr selected_host = prefer_host1 ? host1 : host2;
-
-  return {selected_host};
+  return prefer_host1 ? host1 : host2;
 }
 
 Upstream::HostConstSharedPtr
 PeakEwmaLoadBalancer::peekAnotherHost(ABSL_ATTRIBUTE_UNUSED Upstream::LoadBalancerContext* context) {
   return nullptr;
-}
-
-OptRef<Envoy::Http::ConnectionPool::ConnectionLifetimeCallbacks>
-PeakEwmaLoadBalancer::lifetimeCallbacks() {
-  return {};
-}
-
-absl::optional<Upstream::SelectedPoolAndConnection> PeakEwmaLoadBalancer::selectExistingConnection(
-    ABSL_ATTRIBUTE_UNUSED Upstream::LoadBalancerContext* context,
-    ABSL_ATTRIBUTE_UNUSED const Upstream::Host& host,
-    ABSL_ATTRIBUTE_UNUSED std::vector<uint8_t>& hash_key) {
-  return absl::nullopt;
 }
 
 } // namespace PeakEwma

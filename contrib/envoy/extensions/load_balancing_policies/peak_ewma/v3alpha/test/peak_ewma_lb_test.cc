@@ -77,8 +77,9 @@ public:
     config_.mutable_default_rtt()->set_seconds(1);
     config_.mutable_decay_time()->set_seconds(2);
     
-    lb_ = std::make_unique<PeakEwmaLoadBalancer>(params, *cluster_info_, stats_, runtime_, random_,
-                                                 time_source_, config_);
+    lb_ = std::make_unique<PeakEwmaLoadBalancer>(
+        params.priority_set, params.local_priority_set, stats_, runtime_, random_, 50,
+        *cluster_info_, time_source_, config_);
     
     // Trigger the member update callback by calling runCallbacks
     host_set_->runCallbacks(hosts_, {});

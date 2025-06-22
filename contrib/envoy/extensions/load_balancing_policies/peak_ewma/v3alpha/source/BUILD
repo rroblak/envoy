@@ -21,7 +21,6 @@ envoy_cc_library(
         "peak_ewma_lb.h",
         "peak_ewma_filter.h",
         "peak_ewma_filter_config.h",
-        "load_balancer_base.h",
     ],
     repository = "@envoy",
     visibility = ["//contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/test:__pkg__"],
@@ -31,6 +30,7 @@ envoy_cc_library(
         "//source/common/runtime:runtime_lib",
         "//source/common/upstream:upstream_lib",
         "//source/extensions/load_balancing_policies/common:factory_base",
+        "//source/extensions/load_balancing_policies/common:load_balancer_lib",
         "//contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha:pkg_cc_proto",
     ],
 )

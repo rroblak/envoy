@@ -2,7 +2,7 @@
 
 #include "envoy/upstream/load_balancer.h"
 
-#include "contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/source/load_balancer_base.h"
+#include "source/extensions/load_balancing_policies/common/load_balancer_impl.h"
 #include "contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/source/ewma.h"
 
 #include "absl/container/flat_hash_map.h"
@@ -54,21 +54,19 @@ private:
 /**
  * This is the implementation of the Peak EWMA load balancer.
  */
-class PeakEwmaLoadBalancer : public PeakEwma::LoadBalancerBase {
+class PeakEwmaLoadBalancer : public Upstream::ZoneAwareLoadBalancerBase {
 public:
   PeakEwmaLoadBalancer(
-      const Upstream::LoadBalancerParams& params, const Upstream::ClusterInfo& cluster_info,
+      const Upstream::PrioritySet& priority_set, const Upstream::PrioritySet* local_priority_set,
       Upstream::ClusterLbStats& stats, Runtime::Loader& runtime, Random::RandomGenerator& random,
+      uint32_t healthy_panic_threshold, const Upstream::ClusterInfo& cluster_info,
       TimeSource& time_source,
       const envoy::extensions::load_balancing_policies::peak_ewma::v3alpha::PeakEwma& config);
 
-  Upstream::HostSelectionResponse chooseHost(Upstream::LoadBalancerContext* context) override;
+  // Upstream::ZoneAwareLoadBalancerBase
+  Upstream::HostConstSharedPtr chooseHostOnce(Upstream::LoadBalancerContext* context) override;
   Upstream::HostConstSharedPtr peekAnotherHost(Upstream::LoadBalancerContext* context) override;
 
-  OptRef<Envoy::Http::ConnectionPool::ConnectionLifetimeCallbacks> lifetimeCallbacks() override;
-  absl::optional<Upstream::SelectedPoolAndConnection>
-  selectExistingConnection(Upstream::LoadBalancerContext* context, const Upstream::Host& host,
-                           std::vector<uint8_t>& hash_key) override;
 
 private:
   // Declared the test peer as a friend to allow access to private members.
@@ -77,14 +75,15 @@ private:
   // This map will hold the stats for each host, removing the need to modify the Host object.
   using HostStatsMap = absl::flat_hash_map<Upstream::HostConstSharedPtr, PeakEwmaHostStats>;
 
-  void onHostSetUpdate(const Upstream::HostVector& hosts_added,
-                       const Upstream::HostVector& hosts_removed);
   
   double getHostCost(const Upstream::HostConstSharedPtr& host);
   
   // Memory-optimized batch cost calculation with prefetching and loop unrolling
   std::vector<std::pair<Upstream::HostConstSharedPtr, double>> 
   calculateBatchCosts(const Upstream::HostVector& hosts);
+
+  void onHostSetUpdate(const Upstream::HostVector& hosts_added,
+                       const Upstream::HostVector& hosts_removed);
 
   const Upstream::ClusterInfo& cluster_info_;
   TimeSource& time_source_;

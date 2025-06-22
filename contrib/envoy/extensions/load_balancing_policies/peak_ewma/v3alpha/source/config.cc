@@ -14,8 +14,10 @@ Upstream::LoadBalancerPtr PeakEwmaCreator::operator()(
   ASSERT(typed_lb_config != nullptr, "Invalid load balancer config");
 
   return std::make_unique<PeakEwmaLoadBalancer>(
-      params, cluster_info, cluster_info.lbStats(), runtime, random, time_source,
-      typed_lb_config->proto_config_);
+      params.priority_set, params.local_priority_set, cluster_info.lbStats(), runtime, random,
+      PROTOBUF_PERCENT_TO_ROUNDED_INTEGER_OR_DEFAULT(cluster_info.lbConfig(),
+                                                     healthy_panic_threshold, 100, 50),
+      cluster_info, time_source, typed_lb_config->proto_config_);
 }
 
 /**
