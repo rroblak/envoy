@@ -2,6 +2,8 @@
 
 #include "envoy/upstream/load_balancer.h"
 
+#include "source/common/common/logger.h"
+#include "source/extensions/load_balancing_policies/common/factory_base.h"
 #include "contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/source/peak_ewma_lb.h"
 
 #include "contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/peak_ewma.pb.h"
@@ -12,35 +14,38 @@ namespace Extensions {
 namespace LoadBalancingPolicies {
 namespace PeakEwma {
 
+using PeakEwmaLbProto = envoy::extensions::load_balancing_policies::peak_ewma::v3alpha::PeakEwma;
+
 class PeakEwmaLbConfig : public Upstream::LoadBalancerConfig {
 public:
-  PeakEwmaLbConfig(
-      const envoy::extensions::load_balancing_policies::peak_ewma::v3alpha::PeakEwma& proto_config)
-      : proto_config_(proto_config) {}
+  PeakEwmaLbConfig(const PeakEwmaLbProto& proto_config) : proto_config_(proto_config) {}
 
-  const envoy::extensions::load_balancing_policies::peak_ewma::v3alpha::PeakEwma proto_config_;
+  const PeakEwmaLbProto proto_config_;
 };
 
-class PeakEwmaLoadBalancerFactory : public Upstream::TypedLoadBalancerFactory {
-public:
-  std::string name() const override { return "envoy.load_balancing_policies.peak_ewma"; }
+struct PeakEwmaCreator : public Logger::Loggable<Logger::Id::upstream> {
+  Upstream::LoadBalancerPtr operator()(Upstream::LoadBalancerParams params,
+                                       OptRef<const Upstream::LoadBalancerConfig> lb_config,
+                                       const Upstream::ClusterInfo& cluster_info,
+                                       const Upstream::PrioritySet& priority_set,
+                                       Runtime::Loader& runtime, Random::RandomGenerator& random,
+                                       TimeSource& time_source);
+};
 
-  Upstream::ThreadAwareLoadBalancerPtr
-  create(OptRef<const Upstream::LoadBalancerConfig> lb_config,
-         const Upstream::ClusterInfo& cluster_info, const Upstream::PrioritySet& priority_set,
-         Runtime::Loader& runtime, Random::RandomGenerator& random,
-         TimeSource& time_source) override;
+class Factory : public Extensions::LoadBalancingPolices::Common::FactoryBase<PeakEwmaLbProto, PeakEwmaCreator> {
+public:
+  Factory() : FactoryBase("envoy.load_balancing_policies.peak_ewma") {}
 
   absl::StatusOr<Upstream::LoadBalancerConfigPtr>
-  loadConfig(Server::Configuration::ServerFactoryContext& context,
-             const Protobuf::Message& config) override;
-
-  ProtobufTypes::MessagePtr createEmptyConfigProto() override {
-    return std::make_unique<
-        envoy::extensions::load_balancing_policies::peak_ewma::v3alpha::PeakEwma>();
+  loadConfig(Server::Configuration::ServerFactoryContext&,
+             const Protobuf::Message& config) override {
+    ASSERT(dynamic_cast<const PeakEwmaLbProto*>(&config) != nullptr);
+    const PeakEwmaLbProto& typed_config = dynamic_cast<const PeakEwmaLbProto&>(config);
+    return Upstream::LoadBalancerConfigPtr{new PeakEwmaLbConfig(typed_config)};
   }
 };
 
+DECLARE_FACTORY(Factory);
 
 } // namespace PeakEwma
 } // namespace LoadBalancingPolicies
