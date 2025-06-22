@@ -3,12 +3,10 @@ syntax = "proto3";
 package envoy.extensions.load_balancing_policies.peak_ewma.v3alpha;
 
 import "google/protobuf/duration.proto";
-// Corrected import for status annotations
-import "xds/annotations/v3/status.proto"; // CHANGED FROM udpa/annotations/status.proto
+import "xds/annotations/v3/status.proto";
 import "validate/validate.proto";
 
-// Corrected file-level option
-option (xds.annotations.v3.file_status).work_in_progress = true; // CHANGED FROM udpa.annotations.file_status
+option (xds.annotations.v3.file_status).work_in_progress = true;
 
 // [#protodoc-title: Peak EWMA Load Balancer Configuration]
 // Configuration for the Peak EWMA (Exponentially Weighted Moving Average) load balancing policy.
@@ -33,8 +31,7 @@ option (xds.annotations.v3.file_status).work_in_progress = true; // CHANGED FROM
 //
 // [#extension: envoy.load_balancing_policies.peak_ewma]
 message PeakEwma {
-  // Corrected message-level option
-  option (xds.annotations.v3.message_status).work_in_progress = true; // CHANGED FROM udpa.annotations.message_status
+  option (xds.annotations.v3.message_status).work_in_progress = true;
 
   // The decay time for the RTT EWMA calculation. This specifies the time window over which
   // latency observations are considered relevant. After this duration, older measurements
