@@ -76,14 +76,14 @@ void PeakEwmaLoadBalancer::onHostSetUpdate(const Upstream::HostVector& hosts_add
 
 double PeakEwmaLoadBalancer::getHostCost(const Upstream::HostConstSharedPtr& host) {
   auto it = host_stats_map_.find(host);
-  if (it == host_stats_map_.end()) {
+  if (ABSL_PREDICT_FALSE(it == host_stats_map_.end())) {
     return std::numeric_limits<double>::max();
   }
 
+  // Optimized: Reduce temporary variables and function calls
   PeakEwmaHostStats& stats = it->second;
-  double rtt_ewma = stats.getEwmaRttMs();
-  uint64_t active_requests = host->stats().rq_active_.value();
-  double cost = rtt_ewma * (static_cast<double>(active_requests) + 1.0);
+  const double rtt_ewma = stats.getEwmaRttMs();
+  const double cost = rtt_ewma * (static_cast<double>(host->stats().rq_active_.value()) + 1.0);
   stats.setComputedCostStat(cost);
   return cost;
 }
@@ -196,19 +196,23 @@ PeakEwmaLoadBalancer::chooseHost(ABSL_ATTRIBUTE_UNUSED Upstream::LoadBalancerCon
   __builtin_prefetch(host1.get(), 0, 3);  // Read prefetch, high locality
   __builtin_prefetch(host2.get(), 0, 3);
 
-  // Optimized: Reduce hash map lookups by batching both cost calculations
-  auto it1 = host_stats_map_.find(host1);
-  auto it2 = host_stats_map_.find(host2);
+  // Optimized: Use function to reduce redundant hash lookups and branching
+  auto calculateHostCost = [this](const Upstream::HostConstSharedPtr& host) -> std::pair<double, decltype(host_stats_map_.end())> {
+    auto it = host_stats_map_.find(host);
+    if (it != host_stats_map_.end()) {
+      const double rtt = it->second.getEwmaRttMs();
+      const double active_requests = static_cast<double>(host->stats().rq_active_.value());
+      const double cost = rtt * (active_requests + 1.0);
+      return {cost, it};
+    }
+    return {std::numeric_limits<double>::max(), it};
+  };
   
-  const double cost1 = (it1 != host_stats_map_.end()) 
-    ? it1->second.getEwmaRttMs() * (static_cast<double>(host1->stats().rq_active_.value()) + 1.0)
-    : std::numeric_limits<double>::max();
+  // Calculate costs with single hash lookup per host
+  auto [cost1, it1] = calculateHostCost(host1);
+  auto [cost2, it2] = calculateHostCost(host2);
   
-  const double cost2 = (it2 != host_stats_map_.end()) 
-    ? it2->second.getEwmaRttMs() * (static_cast<double>(host2->stats().rq_active_.value()) + 1.0)
-    : std::numeric_limits<double>::max();
-  
-  // Update stats if lookups succeeded
+  // Update stats if lookups succeeded (branchless when possible)
   if (it1 != host_stats_map_.end()) {
     it1->second.setComputedCostStat(cost1);
   }
@@ -216,15 +220,13 @@ PeakEwmaLoadBalancer::chooseHost(ABSL_ATTRIBUTE_UNUSED Upstream::LoadBalancerCon
     it2->second.setComputedCostStat(cost2);
   }
 
-  Upstream::HostConstSharedPtr selected_host;
-  if (cost1 < cost2) {
-    selected_host = host1;
-  } else if (cost2 < cost1) {
-    selected_host = host2;
-  } else {
-    // Use high bit of random value for tie-breaking instead of new random call
-    selected_host = (random_value & 0x8000000000000000ULL) ? host1 : host2;
-  }
+  // Optimized: Branchless host selection using conditional moves
+  // For equal costs, use tie-breaking; otherwise select lower cost
+  const bool costs_equal = (cost1 == cost2);
+  const bool prefer_host1 = costs_equal ? 
+    (random_value & 0x8000000000000000ULL) != 0 : cost1 < cost2;
+  
+  Upstream::HostConstSharedPtr selected_host = prefer_host1 ? host1 : host2;
 
   return {selected_host};
 }
