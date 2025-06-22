@@ -75,6 +75,68 @@ double PeakEwmaLoadBalancer::getHostCost(const Upstream::HostConstSharedPtr& hos
   return cost;
 }
 
+std::vector<std::pair<Upstream::HostConstSharedPtr, double>>
+PeakEwmaLoadBalancer::calculateBatchCosts(const Upstream::HostVector& hosts) {
+  std::vector<std::pair<Upstream::HostConstSharedPtr, double>> results;
+  results.reserve(hosts.size());
+  
+  const size_t host_count = hosts.size();
+  
+  // Process hosts in groups of 4 for better cache utilization (loop unrolling)
+  const size_t unrolled_count = host_count & ~3; // Round down to multiple of 4
+  
+  for (size_t i = 0; i < unrolled_count; i += 4) {
+    // Prefetch next cache lines for better memory access patterns
+    if (i + 8 < host_count) {
+      // Prefetch host data structures
+      __builtin_prefetch(hosts[i + 4].get(), 0, 3);  // Read prefetch, high locality
+      __builtin_prefetch(hosts[i + 5].get(), 0, 3);
+      __builtin_prefetch(hosts[i + 6].get(), 0, 3);
+      __builtin_prefetch(hosts[i + 7].get(), 0, 3);
+    }
+    
+    // Unrolled cost calculations for 4 hosts at once
+    for (size_t j = 0; j < 4; ++j) {
+      const size_t idx = i + j;
+      const auto& host = hosts[idx];
+      
+      auto it = host_stats_map_.find(host);
+      double cost;
+      
+      if (it != host_stats_map_.end()) {
+        const double rtt_ewma = it->second.getEwmaRttMs();
+        const uint64_t active_requests = host->stats().rq_active_.value();
+        cost = rtt_ewma * (static_cast<double>(active_requests) + 1.0);
+        it->second.setComputedCostStat(cost);
+      } else {
+        cost = std::numeric_limits<double>::max();
+      }
+      
+      results.emplace_back(host, cost);
+    }
+  }
+  
+  // Handle remaining hosts (< 4)
+  for (size_t i = unrolled_count; i < host_count; ++i) {
+    const auto& host = hosts[i];
+    auto it = host_stats_map_.find(host);
+    double cost;
+    
+    if (it != host_stats_map_.end()) {
+      const double rtt_ewma = it->second.getEwmaRttMs();
+      const uint64_t active_requests = host->stats().rq_active_.value();
+      cost = rtt_ewma * (static_cast<double>(active_requests) + 1.0);
+      it->second.setComputedCostStat(cost);
+    } else {
+      cost = std::numeric_limits<double>::max();
+    }
+    
+    results.emplace_back(host, cost);
+  }
+  
+  return results;
+}
+
 Upstream::HostSelectionResponse
 PeakEwmaLoadBalancer::chooseHost(ABSL_ATTRIBUTE_UNUSED Upstream::LoadBalancerContext* context) {
   const auto& host_sets = priority_set_.hostSetsPerPriority();
@@ -116,6 +178,10 @@ PeakEwmaLoadBalancer::chooseHost(ABSL_ATTRIBUTE_UNUSED Upstream::LoadBalancerCon
 
   const auto& host1 = hosts_to_consider[first_choice];
   const auto& host2 = hosts_to_consider[second_choice];
+
+  // Memory optimization: Prefetch host data for better cache performance
+  __builtin_prefetch(host1.get(), 0, 3);  // Read prefetch, high locality
+  __builtin_prefetch(host2.get(), 0, 3);
 
   // Optimized: Reduce hash map lookups by batching both cost calculations
   auto it1 = host_stats_map_.find(host1);

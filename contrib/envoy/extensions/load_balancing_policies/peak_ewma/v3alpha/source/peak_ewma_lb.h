@@ -8,6 +8,8 @@
 #include "absl/container/flat_hash_map.h"
 #include "contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/peak_ewma.pb.h"
 
+#include <vector>
+
 namespace Envoy {
 namespace Extensions {
 namespace LoadBalancingPolicies {
@@ -23,8 +25,9 @@ class PeakEwmaLoadBalancerFactory;
 /**
  * This is a custom LB policy data structure that will be attached to each host.
  * It stores the EWMA latency for the host.
+ * Optimized with cache line alignment for better memory performance.
  */
-class PeakEwmaHostStats {
+class alignas(64) PeakEwmaHostStats {  // 64-byte cache line alignment
 public:
   // Corrected constructor signature.
   PeakEwmaHostStats(double smoothing_factor, double default_rtt, Stats::Scope& scope,
@@ -72,6 +75,10 @@ private:
                        const Upstream::HostVector& hosts_removed);
   
   double getHostCost(const Upstream::HostConstSharedPtr& host);
+  
+  // Memory-optimized batch cost calculation with prefetching and loop unrolling
+  std::vector<std::pair<Upstream::HostConstSharedPtr, double>> 
+  calculateBatchCosts(const Upstream::HostVector& hosts);
 
   const Upstream::ClusterInfo& cluster_info_;
   TimeSource& time_source_;
