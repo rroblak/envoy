@@ -93,7 +93,7 @@ curl http://localhost:9901/stats?filter=cluster.test_cluster
 The `envoy.yaml` configuration includes:
 
 - **Peak EWMA Settings**:
-  - `rtt_smoothing_factor: 0.1` (sensitive to latency changes)
+  - `rtt_smoothing_factor: 0.3` (default, balanced responsiveness)
   - `default_rtt: 50ms` (conservative baseline)
 
 - **Health Checking**: Ensures only healthy upstreams receive traffic
@@ -128,7 +128,7 @@ The `envoy.yaml` configuration includes:
 ### Peak EWMA Not Responding to Latency
 - Increase test duration to allow EWMA convergence
 - Verify artificial load is creating measurable latency differences
-- Check `rtt_smoothing_factor` - lower values are more sensitive
+- Check `rtt_smoothing_factor` - higher values are more sensitive (default 0.3)
 
 ## Integration with CI/CD
 

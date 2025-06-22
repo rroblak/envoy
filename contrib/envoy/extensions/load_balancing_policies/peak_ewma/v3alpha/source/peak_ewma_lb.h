@@ -14,6 +14,12 @@ namespace Envoy {
 namespace Extensions {
 namespace LoadBalancingPolicies {
 namespace PeakEwma {
+
+// Default RTT smoothing factor when none is specified in configuration.
+// This value provides a good balance between responsiveness to latency changes
+// and stability against temporary spikes.
+constexpr double kDefaultRttSmoothingFactor = 0.3;
+
 namespace {
 // Forward declaration for the test peer class.
 class PeakEwmaTestPeer;

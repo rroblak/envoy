@@ -38,7 +38,7 @@ PeakEwmaLoadBalancer::PeakEwmaLoadBalancer(
       config_proto_(config),
       default_rtt_ms_(static_cast<double>(
           DurationUtil::durationToMilliseconds(config_proto_.default_rtt()))),
-      smoothing_factor_(config_proto_.rtt_smoothing_factor()) {
+      smoothing_factor_(config_proto_.rtt_smoothing_factor() > 0.0 ? config_proto_.rtt_smoothing_factor() : kDefaultRttSmoothingFactor) {
   member_update_cb_handle_ = params.priority_set.addMemberUpdateCb(
       [this](const Upstream::HostVector& hosts_added, const Upstream::HostVector& hosts_removed) -> absl::Status {
         onHostSetUpdate(hosts_added, hosts_removed);

@@ -43,12 +43,15 @@ message PeakEwma {
   // `new_ewma = (sample_rtt * rtt_smoothing_factor) + (current_ewma * (1 - rtt_smoothing_factor))`
   //
   // Typical values:
-  // - 0.1: More sensitive to recent latency changes, good for detecting performance degradation
-  // - 0.5: Balanced approach, suitable for most environments  
-  // - 0.9: More stable, less sensitive to temporary spikes
+  // - 0.1: Very stable, less sensitive to temporary spikes  
+  // - 0.3: Good balance of responsiveness and stability (default)
+  // - 0.5: More responsive to recent latency changes
+  // - 0.9: Highly sensitive, good for detecting rapid performance degradation
   //
-  // Must be greater than 0.0 and less than 1.0. For environments with frequent latency spikes,
-  // lower values (0.1-0.3) are recommended to ensure quick detection and response.
+  // Must be greater than 0.0 and less than 1.0. If not specified, defaults to 0.3.
+  // For very stable environments, lower values (0.1-0.2) provide more stability.
+  // For dynamic environments with frequent performance changes, higher values (0.4-0.7) 
+  // provide faster adaptation to latency changes.
   double rtt_smoothing_factor = 1 [(validate.rules).double = {gt: 0.0, lt: 1.0}];
 
   // The default RTT value used for hosts with no measurement history. This provides a baseline
