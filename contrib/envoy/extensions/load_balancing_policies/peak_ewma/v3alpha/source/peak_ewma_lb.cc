@@ -65,8 +65,9 @@ PeakEwmaLoadBalancer::PeakEwmaLoadBalancer(
   }
 }
 
-void PeakEwmaLoadBalancer::onHostSetUpdate(const Upstream::HostVector& hosts_added,
-                                           const Upstream::HostVector& hosts_removed) {
+void PeakEwmaLoadBalancer::onHostSetUpdate(
+    const Upstream::HostVector& hosts_added,
+    const Upstream::HostVector& hosts_removed) {
   for (const auto& host : hosts_added) {
     host_stats_map_.try_emplace(host, tau_nanos_, default_rtt_ms_,
                                 cluster_info_.statsScope(), *host, time_source_);
@@ -76,86 +77,100 @@ void PeakEwmaLoadBalancer::onHostSetUpdate(const Upstream::HostVector& hosts_add
   }
 }
 
-double PeakEwmaLoadBalancer::getHostCost(const Upstream::HostConstSharedPtr& host) {
-  auto it = host_stats_map_.find(host);
-  if (ABSL_PREDICT_FALSE(it == host_stats_map_.end())) {
+PeakEwmaLoadBalancer::HostStatIterator 
+PeakEwmaLoadBalancer::findHostStatsOptimized(Upstream::HostConstSharedPtr host) {
+  return host_stats_map_.find(host);
+}
+
+double PeakEwmaLoadBalancer::calculateHostCostOptimized(
+    Upstream::HostConstSharedPtr host, HostStatIterator& iterator) {
+  iterator = findHostStatsOptimized(host);
+  if (ABSL_PREDICT_FALSE(iterator == host_stats_map_.end())) {
     return std::numeric_limits<double>::max();
   }
 
-  // Optimized: Reduce temporary variables and function calls
-  PeakEwmaHostStats& stats = it->second;
-  const double rtt_ewma = stats.getEwmaRttMs();
-  const double cost = rtt_ewma * (static_cast<double>(host->stats().rq_active_.value()) + 1.0);
-  stats.setComputedCostStat(cost);
+  PeakEwmaHostStats& host_stats = iterator->second;
+  const double rtt_ewma = host_stats.getEwmaRttMs();
+  const double active_requests = static_cast<double>(host->stats().rq_active_.value());
+  const double cost = rtt_ewma * (active_requests + 1.0);
+  host_stats.setComputedCostStat(cost);
   return cost;
 }
 
-std::vector<std::pair<Upstream::HostConstSharedPtr, double>>
-PeakEwmaLoadBalancer::calculateBatchCosts(const Upstream::HostVector& hosts) {
-  std::vector<std::pair<Upstream::HostConstSharedPtr, double>> results;
+void PeakEwmaLoadBalancer::prefetchHostData(
+    const Upstream::HostVector& hosts, size_t start_index) const {
+  const size_t host_count = hosts.size();
+  const size_t prefetch_end = std::min(start_index + kLoopUnrollFactor, host_count);
+  
+  for (size_t i = start_index; i < prefetch_end; ++i) {
+    __builtin_prefetch(hosts[i].get(), kPrefetchReadHint, kPrefetchHighLocality);
+  }
+}
+
+std::vector<PeakEwmaLoadBalancer::HostCostPair>
+PeakEwmaLoadBalancer::calculateBatchCostsOptimized(const Upstream::HostVector& hosts) {
+  std::vector<HostCostPair> results;
   results.reserve(hosts.size());
   
   const size_t host_count = hosts.size();
+  const size_t unrolled_end = host_count & ~(kLoopUnrollFactor - 1);
   
-  // Process hosts in groups of 4 for better cache utilization (loop unrolling)
-  const size_t unrolled_count = host_count & ~3; // Round down to multiple of 4
-  
-  for (size_t i = 0; i < unrolled_count; i += 4) {
-    // Prefetch next cache lines for better memory access patterns
-    if (i + 8 < host_count) {
-      // Prefetch host data structures
-      __builtin_prefetch(hosts[i + 4].get(), 0, 3);  // Read prefetch, high locality
-      __builtin_prefetch(hosts[i + 5].get(), 0, 3);
-      __builtin_prefetch(hosts[i + 6].get(), 0, 3);
-      __builtin_prefetch(hosts[i + 7].get(), 0, 3);
+  for (size_t i = 0; i < unrolled_end; i += kLoopUnrollFactor) {
+    if (i + (kLoopUnrollFactor * 2) < host_count) {
+      prefetchHostData(hosts, i + kLoopUnrollFactor);
     }
     
-    // Unrolled cost calculations for 4 hosts at once
-    for (size_t j = 0; j < 4; ++j) {
-      const size_t idx = i + j;
-      const auto& host = hosts[idx];
+    for (size_t j = 0; j < kLoopUnrollFactor; ++j) {
+      const size_t host_index = i + j;
+      const auto& host = hosts[host_index];
       
-      auto it = host_stats_map_.find(host);
-      double cost;
-      
-      if (it != host_stats_map_.end()) {
-        const double rtt_ewma = it->second.getEwmaRttMs();
-        const uint64_t active_requests = host->stats().rq_active_.value();
-        cost = rtt_ewma * (static_cast<double>(active_requests) + 1.0);
-        it->second.setComputedCostStat(cost);
-      } else {
-        cost = std::numeric_limits<double>::max();
-      }
-      
+      HostStatIterator iterator;
+      const double cost = calculateHostCostOptimized(host, iterator);
       results.emplace_back(host, cost);
     }
   }
   
-  // Handle remaining hosts (< 4)
-  for (size_t i = unrolled_count; i < host_count; ++i) {
+  for (size_t i = unrolled_end; i < host_count; ++i) {
     const auto& host = hosts[i];
-    auto it = host_stats_map_.find(host);
-    double cost;
-    
-    if (it != host_stats_map_.end()) {
-      const double rtt_ewma = it->second.getEwmaRttMs();
-      const uint64_t active_requests = host->stats().rq_active_.value();
-      cost = rtt_ewma * (static_cast<double>(active_requests) + 1.0);
-      it->second.setComputedCostStat(cost);
-    } else {
-      cost = std::numeric_limits<double>::max();
-    }
-    
+    HostStatIterator iterator;
+    const double cost = calculateHostCostOptimized(host, iterator);
     results.emplace_back(host, cost);
   }
   
   return results;
 }
 
+
+Upstream::HostConstSharedPtr PeakEwmaLoadBalancer::selectFromTwoCandidatesOptimized(
+    const Upstream::HostVector& hosts, uint64_t random_value) {
+  const size_t host_count = hosts.size();
+  const size_t first_index = random_value % host_count;
+  const size_t second_index = (first_index + 1 + (random_value >> 16) % (host_count - 1)) % host_count;
+
+  const auto& first_host = hosts[first_index];
+  const auto& second_host = hosts[second_index];
+
+  __builtin_prefetch(first_host.get(), kPrefetchReadHint, kPrefetchHighLocality);
+  __builtin_prefetch(second_host.get(), kPrefetchReadHint, kPrefetchHighLocality);
+
+  HostStatIterator first_iterator;
+  HostStatIterator second_iterator;
+  
+  const double first_cost = calculateHostCostOptimized(first_host, first_iterator);
+  const double second_cost = calculateHostCostOptimized(second_host, second_iterator);
+
+  const bool costs_equal = (first_cost == second_cost);
+  const bool prefer_first = costs_equal ? 
+    (random_value & kTieBreakingMask) != 0 : first_cost < second_cost;
+  
+  return prefer_first ? first_host : second_host;
+}
+
 Upstream::HostConstSharedPtr
 PeakEwmaLoadBalancer::chooseHostOnce(ABSL_ATTRIBUTE_UNUSED Upstream::LoadBalancerContext* context) {
   const auto& host_sets = priority_set_.hostSetsPerPriority();
   const Upstream::HostSet* current_host_set = nullptr;
+  
   for (const auto& host_set : host_sets) {
     if (host_set && !host_set->healthyHosts().empty()) {
       current_host_set = host_set.get();
@@ -183,51 +198,7 @@ PeakEwmaLoadBalancer::chooseHostOnce(ABSL_ATTRIBUTE_UNUSED Upstream::LoadBalance
     return hosts_to_consider[0];
   }
 
-  const size_t host_count = hosts_to_consider.size();
-  
-  // Optimized P2C: Use single random call for both choices and tie-breaking
-  const uint64_t random_value = random_.random();
-  const size_t first_choice = random_value % host_count;
-  const size_t second_choice = (first_choice + 1 + (random_value >> 16) % (host_count - 1)) % host_count;
-
-  const auto& host1 = hosts_to_consider[first_choice];
-  const auto& host2 = hosts_to_consider[second_choice];
-
-  // Memory optimization: Prefetch host data for better cache performance
-  __builtin_prefetch(host1.get(), 0, 3);  // Read prefetch, high locality
-  __builtin_prefetch(host2.get(), 0, 3);
-
-  // Optimized: Use function to reduce redundant hash lookups and branching
-  auto calculateHostCost = [this](const Upstream::HostConstSharedPtr& host) -> std::pair<double, decltype(host_stats_map_.end())> {
-    auto it = host_stats_map_.find(host);
-    if (it != host_stats_map_.end()) {
-      const double rtt = it->second.getEwmaRttMs();
-      const double active_requests = static_cast<double>(host->stats().rq_active_.value());
-      const double cost = rtt * (active_requests + 1.0);
-      return {cost, it};
-    }
-    return {std::numeric_limits<double>::max(), it};
-  };
-  
-  // Calculate costs with single hash lookup per host
-  auto [cost1, it1] = calculateHostCost(host1);
-  auto [cost2, it2] = calculateHostCost(host2);
-  
-  // Update stats if lookups succeeded (branchless when possible)
-  if (it1 != host_stats_map_.end()) {
-    it1->second.setComputedCostStat(cost1);
-  }
-  if (it2 != host_stats_map_.end()) {
-    it2->second.setComputedCostStat(cost2);
-  }
-
-  // Optimized: Branchless host selection using conditional moves
-  // For equal costs, use tie-breaking; otherwise select lower cost
-  const bool costs_equal = (cost1 == cost2);
-  const bool prefer_host1 = costs_equal ? 
-    (random_value & 0x8000000000000000ULL) != 0 : cost1 < cost2;
-  
-  return prefer_host1 ? host1 : host2;
+  return selectFromTwoCandidatesOptimized(hosts_to_consider, random_.random());
 }
 
 Upstream::HostConstSharedPtr

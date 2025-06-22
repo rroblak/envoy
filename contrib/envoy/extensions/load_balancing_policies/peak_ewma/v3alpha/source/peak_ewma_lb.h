@@ -15,26 +15,21 @@ namespace Extensions {
 namespace LoadBalancingPolicies {
 namespace PeakEwma {
 
-// Default decay time when none is specified in configuration.
-// Equivalent to smoothing factor of ~0.3 for responsive load balancing.
-constexpr int64_t kDefaultDecayTimeSeconds = 2;
+constexpr int64_t kDefaultDecayTimeSeconds = 10;
+constexpr size_t kCacheLineAlignment = 64;
+constexpr size_t kLoopUnrollFactor = 4;
+constexpr int kPrefetchReadHint = 0;
+constexpr int kPrefetchHighLocality = 3;
+constexpr uint64_t kTieBreakingMask = 0x8000000000000000ULL;
 
 namespace {
-// Forward declaration for the test peer class.
 class PeakEwmaTestPeer;
 } // namespace
 
-// Forward declaration of the factory
 class PeakEwmaLoadBalancerFactory;
 
-/**
- * This is a custom LB policy data structure that will be attached to each host.
- * It stores the EWMA latency for the host.
- * Optimized with cache line alignment for better memory performance.
- */
-class alignas(64) PeakEwmaHostStats {  // 64-byte cache line alignment
+class alignas(kCacheLineAlignment) PeakEwmaHostStats {
 public:
-  // Constructor using decay time (Finagle-style).
   PeakEwmaHostStats(int64_t tau_nanos, double default_rtt, Stats::Scope& scope,
                     const Upstream::Host& host, TimeSource& time_source);
 
@@ -42,18 +37,13 @@ public:
   void recordRttSample(std::chrono::milliseconds rtt);
   void setComputedCostStat(double cost) { cost_stat_.set(static_cast<uint64_t>(cost)); }
 
-  // Made public for test access.
   PeakEwmaCalculator rtt_ewma_;
 
 private:
   TimeSource& time_source_;
-  // The gauge is now stored directly, not as a reference.
   Stats::Gauge& cost_stat_;
 };
 
-/**
- * This is the implementation of the Peak EWMA load balancer.
- */
 class PeakEwmaLoadBalancer : public Upstream::ZoneAwareLoadBalancerBase {
 public:
   PeakEwmaLoadBalancer(
@@ -63,25 +53,23 @@ public:
       TimeSource& time_source,
       const envoy::extensions::load_balancing_policies::peak_ewma::v3alpha::PeakEwma& config);
 
-  // Upstream::ZoneAwareLoadBalancerBase
   Upstream::HostConstSharedPtr chooseHostOnce(Upstream::LoadBalancerContext* context) override;
   Upstream::HostConstSharedPtr peekAnotherHost(Upstream::LoadBalancerContext* context) override;
 
-
 private:
-  // Declared the test peer as a friend to allow access to private members.
   friend class PeakEwmaTestPeer;
 
-  // This map will hold the stats for each host, removing the need to modify the Host object.
   using HostStatsMap = absl::flat_hash_map<Upstream::HostConstSharedPtr, PeakEwmaHostStats>;
+  using HostCostPair = std::pair<Upstream::HostConstSharedPtr, double>;
+  using HostStatIterator = HostStatsMap::iterator;
 
+  Upstream::HostConstSharedPtr selectFromTwoCandidatesOptimized(
+      const Upstream::HostVector& hosts, uint64_t random_value);
+  double calculateHostCostOptimized(Upstream::HostConstSharedPtr host, HostStatIterator& iterator);
+  HostStatIterator findHostStatsOptimized(Upstream::HostConstSharedPtr host);
+  std::vector<HostCostPair> calculateBatchCostsOptimized(const Upstream::HostVector& hosts);
+  void prefetchHostData(const Upstream::HostVector& hosts, size_t start_index) const;
   
-  double getHostCost(const Upstream::HostConstSharedPtr& host);
-  
-  // Memory-optimized batch cost calculation with prefetching and loop unrolling
-  std::vector<std::pair<Upstream::HostConstSharedPtr, double>> 
-  calculateBatchCosts(const Upstream::HostVector& hosts);
-
   void onHostSetUpdate(const Upstream::HostVector& hosts_added,
                        const Upstream::HostVector& hosts_removed);
 
@@ -89,7 +77,7 @@ private:
   TimeSource& time_source_;
   const envoy::extensions::load_balancing_policies::peak_ewma::v3alpha::PeakEwma config_proto_;
   const double default_rtt_ms_;
-  const int64_t tau_nanos_;  // Decay time constant in nanoseconds
+  const int64_t tau_nanos_;
   Common::CallbackHandlePtr member_update_cb_handle_;
   HostStatsMap host_stats_map_;
 };
