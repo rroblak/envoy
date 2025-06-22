@@ -36,23 +36,26 @@ message PeakEwma {
   // Corrected message-level option
   option (xds.annotations.v3.message_status).work_in_progress = true; // CHANGED FROM udpa.annotations.message_status
 
-  // The smoothing factor for the RTT EWMA calculation. This determines how responsive the EWMA 
-  // is to new RTT samples versus historical values.
+  // The decay time for the RTT EWMA calculation. This specifies the time window over which
+  // latency observations are considered relevant. After this duration, older measurements
+  // have exponentially decayed to half their original weight.
   //
-  // The EWMA update formula is:
-  // `new_ewma = (sample_rtt * rtt_smoothing_factor) + (current_ewma * (1 - rtt_smoothing_factor))`
+  // The Peak EWMA algorithm uses this to calculate the EWMA time constant (tau):
+  // `tau = decay_time_nanos`, and the EWMA reaches its half-life after `tau * ln(2)`.
+  //
+  // This parameter is more intuitive than a raw smoothing factor as it directly relates
+  // to the time duration over which you want to observe latency trends.
   //
   // Typical values:
-  // - 0.1: Very stable, less sensitive to temporary spikes  
-  // - 0.3: Good balance of responsiveness and stability (default)
-  // - 0.5: More responsive to recent latency changes
-  // - 0.9: Highly sensitive, good for detecting rapid performance degradation
+  // - 5s: Quick adaptation, good for detecting rapid performance changes
+  // - 10s: Balanced responsiveness and stability (default, matches Finagle)
+  // - 30s: More stable, less sensitive to temporary spikes
+  // - 60s: Very stable, suitable for long-lived connections
   //
-  // Must be greater than 0.0 and less than 1.0. If not specified, defaults to 0.3.
-  // For very stable environments, lower values (0.1-0.2) provide more stability.
-  // For dynamic environments with frequent performance changes, higher values (0.4-0.7) 
-  // provide faster adaptation to latency changes.
-  double rtt_smoothing_factor = 1 [(validate.rules).double = {gt: 0.0, lt: 1.0}];
+  // If not specified, defaults to 10 seconds (following Finagle's default).
+  google.protobuf.Duration decay_time = 1 [(validate.rules).duration = {
+    gt {nanos: 0}
+  }];
 
   // The default RTT value used for hosts with no measurement history. This provides a baseline
   // cost for new hosts entering the cluster or hosts that have been idle.

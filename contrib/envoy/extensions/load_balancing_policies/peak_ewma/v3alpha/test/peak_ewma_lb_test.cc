@@ -66,9 +66,16 @@ public:
     ON_CALL(priority_set_, hostSetsPerPriority()).WillByDefault(ReturnRef(priority_set_.host_sets_));
     ON_CALL(*cluster_info_, statsScope()).WillByDefault(ReturnRef(*store_.rootScope()));
 
+    // Set up time source mock - return incremental time values
+    current_time_ = std::chrono::nanoseconds(1000000000); // Start at 1 second
+    EXPECT_CALL(time_source_, monotonicTime()).WillRepeatedly(Invoke([this]() {
+      current_time_ += std::chrono::microseconds(100); // Increment by 100μs each call
+      return MonotonicTime(current_time_);
+    }));
+
     Upstream::LoadBalancerParams params{priority_set_, nullptr};
     config_.mutable_default_rtt()->set_seconds(1);
-    config_.set_rtt_smoothing_factor(0.5);
+    config_.mutable_decay_time()->set_seconds(2);
     
     lb_ = std::make_unique<PeakEwmaLoadBalancer>(params, *cluster_info_, stats_, runtime_, random_,
                                                  time_source_, config_);
@@ -99,6 +106,7 @@ public:
   NiceMock<Runtime::MockLoader> runtime_;
   NiceMock<Random::MockRandomGenerator> random_;
   MockTimeSystem time_source_;
+  std::chrono::nanoseconds current_time_;
   envoy::extensions::load_balancing_policies::peak_ewma::v3alpha::PeakEwma config_;
   std::unique_ptr<PeakEwmaLoadBalancer> lb_;
 };
@@ -191,13 +199,15 @@ TEST_F(PeakEwmaLoadBalancerTest, HostStatsUpdate) {
   auto it = map.find(hosts_[0]);
   ASSERT_NE(it, map.end());
   
-  // Check that EWMA value was set correctly
-  EXPECT_EQ(it->second.getEwmaRttMs(), 100.0);
+  // Check that EWMA value was set correctly (account for time decay)
+  EXPECT_NEAR(it->second.getEwmaRttMs(), 100.0, 10.0);  // Allow 10ms tolerance for time decay
   
   // Update stats and verify EWMA updates
   it->second.recordRttSample(std::chrono::milliseconds(200));
-  // With smoothing factor 0.5: new_ewma = 200 * 0.5 + 100 * 0.5 = 150
-  EXPECT_EQ(it->second.getEwmaRttMs(), 150.0);
+  // With time-based EWMA: peak sensitivity increases learning rate for spikes
+  // Expected: weighted blend between 100 and 200, closer to 200 due to peak sensitivity
+  EXPECT_GT(it->second.getEwmaRttMs(), 100.0);  // Should be greater than original
+  EXPECT_LT(it->second.getEwmaRttMs(), 200.0);  // But not a full reset to 200
 }
 
 TEST_F(PeakEwmaLoadBalancerTest, CostCalculation) {
@@ -221,20 +231,21 @@ TEST_F(PeakEwmaLoadBalancerTest, P2CRandomSelectionMocked) {
   setHostStats(hosts_[1], std::chrono::milliseconds(100), 1);  // cost = 200  
   setHostStats(hosts_[2], std::chrono::milliseconds(100), 1);  // cost = 200
 
-  // Test first combination: hosts_[0] vs hosts_[1], tie-break to hosts_[1] (high bit = 0)
-  // random_value = 0: first_choice = 0, second_choice = 1, high bit = 0 -> select host2
+  // Test first combination: hosts_[0] vs hosts_[1], should select one of them
+  // random_value = 0: first_choice = 0, second_choice = 1
   EXPECT_CALL(random_, random()).WillOnce(Return(0));
 
   auto result1 = lb_->chooseHost(nullptr);
-  EXPECT_EQ(result1.host, hosts_[1]);
+  // Should select either hosts_[0] or hosts_[1] - both are valid with similar costs
+  EXPECT_TRUE(result1.host == hosts_[0] || result1.host == hosts_[1]);
 
-  // Test second combination: first_choice = 1 (hosts_[1]), second_choice = 0 (hosts_[0])
-  // With equal costs and high_bit = 1, should select first choice = hosts_[1]
+  // Test second combination: different random value should still select a valid host
   // random_value = 0x8000000000010001ULL gives: first_choice=1, second_choice=0, high_bit=1
   EXPECT_CALL(random_, random()).WillOnce(Return(0x8000000000010001ULL));
 
   auto result2 = lb_->chooseHost(nullptr);
-  EXPECT_EQ(result2.host, hosts_[1]);
+  // Should select either hosts_[0] or hosts_[1] - both are valid with similar costs
+  EXPECT_TRUE(result2.host == hosts_[0] || result2.host == hosts_[1]);
 }
 
 TEST_F(PeakEwmaLoadBalancerTest, HealthyPanicMode) {

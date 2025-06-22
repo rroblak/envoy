@@ -15,10 +15,9 @@ namespace Extensions {
 namespace LoadBalancingPolicies {
 namespace PeakEwma {
 
-// Default RTT smoothing factor when none is specified in configuration.
-// This value provides a good balance between responsiveness to latency changes
-// and stability against temporary spikes.
-constexpr double kDefaultRttSmoothingFactor = 0.3;
+// Default decay time when none is specified in configuration.
+// Equivalent to smoothing factor of ~0.3 for responsive load balancing.
+constexpr int64_t kDefaultDecayTimeSeconds = 2;
 
 namespace {
 // Forward declaration for the test peer class.
@@ -35,18 +34,19 @@ class PeakEwmaLoadBalancerFactory;
  */
 class alignas(64) PeakEwmaHostStats {  // 64-byte cache line alignment
 public:
-  // Corrected constructor signature.
-  PeakEwmaHostStats(double smoothing_factor, double default_rtt, Stats::Scope& scope,
-                    const Upstream::Host& host);
+  // Constructor using decay time (Finagle-style).
+  PeakEwmaHostStats(int64_t tau_nanos, double default_rtt, Stats::Scope& scope,
+                    const Upstream::Host& host, TimeSource& time_source);
 
-  double getEwmaRttMs() const { return rtt_ewma_.value(); }
+  double getEwmaRttMs() const;
   void recordRttSample(std::chrono::milliseconds rtt);
   void setComputedCostStat(double cost) { cost_stat_.set(static_cast<uint64_t>(cost)); }
 
   // Made public for test access.
-  EwmaCalculator rtt_ewma_;
+  PeakEwmaCalculator rtt_ewma_;
 
 private:
+  TimeSource& time_source_;
   // The gauge is now stored directly, not as a reference.
   Stats::Gauge& cost_stat_;
 };
@@ -90,7 +90,7 @@ private:
   TimeSource& time_source_;
   const envoy::extensions::load_balancing_policies::peak_ewma::v3alpha::PeakEwma config_proto_;
   const double default_rtt_ms_;
-  const double smoothing_factor_;
+  const int64_t tau_nanos_;  // Decay time constant in nanoseconds
   Common::CallbackHandlePtr member_update_cb_handle_;
   HostStatsMap host_stats_map_;
 };

@@ -16,15 +16,26 @@ namespace Extensions {
 namespace LoadBalancingPolicies {
 namespace PeakEwma {
 
-PeakEwmaHostStats::PeakEwmaHostStats(double smoothing_factor, double default_rtt,
-                                     Stats::Scope& scope, const Upstream::Host& host)
-    : rtt_ewma_(smoothing_factor, default_rtt),
+PeakEwmaHostStats::PeakEwmaHostStats(int64_t tau_nanos, double default_rtt,
+                                     Stats::Scope& scope, const Upstream::Host& host,
+                                     TimeSource& time_source)
+    : rtt_ewma_(tau_nanos, default_rtt),
+      time_source_(time_source),
       cost_stat_(scope.gaugeFromString(
           "peak_ewma." + host.address()->asString() + ".cost",
           Stats::Gauge::ImportMode::NeverImport)) {}
 
+double PeakEwmaHostStats::getEwmaRttMs() const {
+  // Get current time and update EWMA decay
+  int64_t current_nanos = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      time_source_.monotonicTime().time_since_epoch()).count();
+  return const_cast<PeakEwmaCalculator&>(rtt_ewma_).value(current_nanos);
+}
+
 void PeakEwmaHostStats::recordRttSample(std::chrono::milliseconds rtt) {
-  rtt_ewma_.insert(static_cast<double>(rtt.count()));
+  int64_t timestamp_nanos = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      time_source_.monotonicTime().time_since_epoch()).count();
+  rtt_ewma_.insert(static_cast<double>(rtt.count()), timestamp_nanos);
 }
 
 PeakEwmaLoadBalancer::PeakEwmaLoadBalancer(
@@ -38,7 +49,9 @@ PeakEwmaLoadBalancer::PeakEwmaLoadBalancer(
       config_proto_(config),
       default_rtt_ms_(static_cast<double>(
           DurationUtil::durationToMilliseconds(config_proto_.default_rtt()))),
-      smoothing_factor_(config_proto_.rtt_smoothing_factor() > 0.0 ? config_proto_.rtt_smoothing_factor() : kDefaultRttSmoothingFactor) {
+      tau_nanos_(config_proto_.has_decay_time() ? 
+          DurationUtil::durationToMilliseconds(config_proto_.decay_time()) * 1000000LL :
+          kDefaultDecayTimeSeconds * 1000000000LL) {
   member_update_cb_handle_ = params.priority_set.addMemberUpdateCb(
       [this](const Upstream::HostVector& hosts_added, const Upstream::HostVector& hosts_removed) -> absl::Status {
         onHostSetUpdate(hosts_added, hosts_removed);
@@ -53,8 +66,8 @@ PeakEwmaLoadBalancer::PeakEwmaLoadBalancer(
 void PeakEwmaLoadBalancer::onHostSetUpdate(const Upstream::HostVector& hosts_added,
                                            const Upstream::HostVector& hosts_removed) {
   for (const auto& host : hosts_added) {
-    host_stats_map_.try_emplace(host, smoothing_factor_, default_rtt_ms_,
-                                cluster_info_.statsScope(), *host);
+    host_stats_map_.try_emplace(host, tau_nanos_, default_rtt_ms_,
+                                cluster_info_.statsScope(), *host, time_source_);
   }
   for (const auto& host : hosts_removed) {
     host_stats_map_.erase(host);
