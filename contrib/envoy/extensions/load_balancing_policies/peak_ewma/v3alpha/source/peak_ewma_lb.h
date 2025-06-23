@@ -36,6 +36,7 @@ public:
                     const Upstream::Host& host, TimeSource& time_source);
 
   double getEwmaRttMs() const;
+  double getEwmaRttMs(int64_t cached_time_nanos) const;
   void recordRttSample(std::chrono::milliseconds rtt);
   void setComputedCostStat(double cost) { cost_stat_.set(static_cast<uint64_t>(cost)); }
 
@@ -68,12 +69,17 @@ private:
   Upstream::HostConstSharedPtr selectFromTwoCandidatesOptimized(
       const Upstream::HostVector& hosts, uint64_t random_value);
   double calculateHostCostOptimized(Upstream::HostConstSharedPtr host, HostStatIterator& iterator);
+  double calculateHostCostBranchless(double rtt_ewma, double active_requests) const;
   HostStatIterator findHostStatsOptimized(Upstream::HostConstSharedPtr host);
   std::vector<HostCostPair> calculateBatchCostsOptimized(const Upstream::HostVector& hosts);
   void prefetchHostData(const Upstream::HostVector& hosts, size_t start_index) const;
   
   void onHostSetUpdate(const Upstream::HostVector& hosts_added,
                        const Upstream::HostVector& hosts_removed);
+  
+  int64_t getCachedTimeNanos() const;
+  void prefetchHostDataIntelligent(const Upstream::HostVector& hosts,
+                                   size_t primary_idx, size_t secondary_idx) const;
 
   const Upstream::ClusterInfo& cluster_info_;
   TimeSource& time_source_;
@@ -81,6 +87,11 @@ private:
   const int64_t tau_nanos_;
   Common::CallbackHandlePtr member_update_cb_handle_;
   HostStatsMap host_stats_map_;
+  
+  // Time caching optimization - reduce syscall overhead
+  mutable int64_t cached_time_nanos_ = 0;
+  mutable uint32_t time_cache_counter_ = 0;
+  static constexpr uint32_t kTimeCacheUpdates = 16;
 };
 
 } // namespace PeakEwma

@@ -32,6 +32,11 @@ double PeakEwmaHostStats::getEwmaRttMs() const {
   return const_cast<PeakEwmaCalculator&>(rtt_ewma_).value(current_nanos);
 }
 
+double PeakEwmaHostStats::getEwmaRttMs(int64_t cached_time_nanos) const {
+  // Use pre-computed cached time to avoid syscall overhead
+  return const_cast<PeakEwmaCalculator&>(rtt_ewma_).value(cached_time_nanos);
+}
+
 void PeakEwmaHostStats::recordRttSample(std::chrono::milliseconds rtt) {
   int64_t timestamp_nanos = std::chrono::duration_cast<std::chrono::nanoseconds>(
       time_source_.monotonicTime().time_since_epoch()).count();
@@ -87,24 +92,28 @@ double PeakEwmaLoadBalancer::calculateHostCostOptimized(
     return std::numeric_limits<double>::max();
   }
 
+  // Use cached time to reduce syscall overhead
+  const int64_t cached_time = getCachedTimeNanos();
   PeakEwmaHostStats& host_stats = iterator->second;
-  const double rtt_ewma = host_stats.getEwmaRttMs();
+  const double rtt_ewma = host_stats.getEwmaRttMs(cached_time);
   const double active_requests = static_cast<double>(host->stats().rq_active_.value());
   
-  double cost;
-  if (rtt_ewma == 0.0 && active_requests > 0) {
-    // Host has no RTT history but has pending requests - apply penalty
-    cost = kPenaltyValue + active_requests;
-  } else if (rtt_ewma == 0.0) {
-    // Host has no RTT history and no pending requests - allow first request
-    cost = 0.0;
-  } else {
-    // Normal case: use RTT-based cost calculation
-    cost = rtt_ewma * (active_requests + 1.0);
-  }
-  
+  const double cost = calculateHostCostBranchless(rtt_ewma, active_requests);
   host_stats.setComputedCostStat(cost);
   return cost;
+}
+
+double PeakEwmaLoadBalancer::calculateHostCostBranchless(double rtt_ewma, double active_requests) const {
+  const bool has_rtt = (rtt_ewma > 0.0);
+  const bool has_requests = (active_requests > 0.0);
+  
+  // Branchless cost calculation using conditional arithmetic
+  const double normal_cost = rtt_ewma * (active_requests + 1.0);
+  const double penalty_cost = kPenaltyValue + active_requests;
+  const double zero_cost = 0.0;
+  
+  // Use arithmetic instead of branching for better performance
+  return has_rtt ? normal_cost : (has_requests ? penalty_cost : zero_cost);
 }
 
 void PeakEwmaLoadBalancer::prefetchHostData(
@@ -160,8 +169,8 @@ Upstream::HostConstSharedPtr PeakEwmaLoadBalancer::selectFromTwoCandidatesOptimi
   const auto& first_host = hosts[first_index];
   const auto& second_host = hosts[second_index];
 
-  __builtin_prefetch(first_host.get(), kPrefetchReadHint, kPrefetchHighLocality);
-  __builtin_prefetch(second_host.get(), kPrefetchReadHint, kPrefetchHighLocality);
+  // Use intelligent prefetching for the two specific hosts we need
+  prefetchHostDataIntelligent(hosts, first_index, second_index);
 
   HostStatIterator first_iterator;
   HostStatIterator second_iterator;
@@ -209,6 +218,32 @@ PeakEwmaLoadBalancer::chooseHostOnce(ABSL_ATTRIBUTE_UNUSED Upstream::LoadBalance
   }
 
   return selectFromTwoCandidatesOptimized(hosts_to_consider, random_.random());
+}
+
+int64_t PeakEwmaLoadBalancer::getCachedTimeNanos() const {
+  if (++time_cache_counter_ >= kTimeCacheUpdates) {
+    cached_time_nanos_ = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        time_source_.monotonicTime().time_since_epoch()).count();
+    time_cache_counter_ = 0;
+  }
+  return cached_time_nanos_;
+}
+
+void PeakEwmaLoadBalancer::prefetchHostDataIntelligent(
+    const Upstream::HostVector& hosts, size_t primary_idx, size_t secondary_idx) const {
+  // Prefetch the two candidates we'll actually use
+  __builtin_prefetch(hosts[primary_idx].get(), kPrefetchReadHint, kPrefetchHighLocality);
+  __builtin_prefetch(hosts[secondary_idx].get(), kPrefetchReadHint, kPrefetchHighLocality);
+  
+  // Prefetch their stats data from the hash map
+  auto it1 = host_stats_map_.find(hosts[primary_idx]);
+  auto it2 = host_stats_map_.find(hosts[secondary_idx]);
+  if (it1 != host_stats_map_.end()) {
+    __builtin_prefetch(&it1->second, kPrefetchReadHint, kPrefetchHighLocality);
+  }
+  if (it2 != host_stats_map_.end()) {
+    __builtin_prefetch(&it2->second, kPrefetchReadHint, kPrefetchHighLocality);
+  }
 }
 
 Upstream::HostConstSharedPtr

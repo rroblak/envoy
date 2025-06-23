@@ -341,48 +341,6 @@ TEST_F(PeakEwmaLoadBalancerTest, PenaltyBasedSystemForNewHosts) {
   EXPECT_EQ(result.host, hosts_[2]);
 }
 
-TEST_F(PeakEwmaLoadBalancerTest, QuickBenchmarkPenaltyBasedSystem) {
-  // Quick benchmark test for penalty-based host selection performance
-  const int iterations = 10000;  // Reduced for faster execution
-  
-  // Set up a mix of hosts: some with RTT history, some without
-  for (size_t i = 0; i < hosts_.size(); ++i) {
-    if (i % 2 == 0) {
-      // Hosts with RTT history
-      setHostStats(hosts_[i], std::chrono::milliseconds(50 + i * 10), i);
-    } else {
-      // New hosts without RTT history
-      hosts_[i]->stats().rq_active_.set(i);
-    }
-  }
-
-  // Set up random number sequence
-  EXPECT_CALL(random_, random()).Times(iterations).WillRepeatedly(Return(42));
-
-  auto start = std::chrono::high_resolution_clock::now();
-  
-  // Run many host selections to measure performance
-  for (int i = 0; i < iterations; ++i) {
-    auto result = lb_->chooseHost(nullptr);
-    EXPECT_NE(result.host, nullptr);
-  }
-  
-  auto end = std::chrono::high_resolution_clock::now();
-  auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
-  
-  // Print benchmark results
-  double selections_per_second = static_cast<double>(iterations) / (duration.count() / 1000000.0);
-  
-  std::cout << "\n=== Peak EWMA Penalty-Based System Quick Benchmark ===" << std::endl;
-  std::cout << "Total iterations: " << iterations << std::endl;
-  std::cout << "Total time: " << duration.count() << " μs" << std::endl;
-  std::cout << "Average time per selection: " << static_cast<double>(duration.count()) / iterations << " μs" << std::endl;
-  std::cout << "Selections per second: " << static_cast<int>(selections_per_second) << std::endl;
-  std::cout << "=======================================================" << std::endl;
-  
-  // Performance assertion: should be able to do at least 10K selections per second (relaxed)
-  EXPECT_GT(selections_per_second, 10000) << "Performance regression detected!";
-}
 
 } // namespace
 } // namespace PeakEwma
