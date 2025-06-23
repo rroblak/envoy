@@ -66,20 +66,20 @@ private:
   using HostCostPair = std::pair<Upstream::HostConstSharedPtr, double>;
   using HostStatIterator = HostStatsMap::iterator;
 
-  Upstream::HostConstSharedPtr selectFromTwoCandidatesOptimized(
+  Upstream::HostConstSharedPtr selectFromTwoCandidates(
       const Upstream::HostVector& hosts, uint64_t random_value);
-  double calculateHostCostOptimized(Upstream::HostConstSharedPtr host, HostStatIterator& iterator);
+  double calculateHostCost(Upstream::HostConstSharedPtr host, HostStatIterator& iterator);
   double calculateHostCostBranchless(double rtt_ewma, double active_requests) const;
-  HostStatIterator findHostStatsOptimized(Upstream::HostConstSharedPtr host);
-  std::vector<HostCostPair> calculateBatchCostsOptimized(const Upstream::HostVector& hosts);
-  void prefetchHostData(const Upstream::HostVector& hosts, size_t start_index) const;
+  HostStatIterator findHostStats(Upstream::HostConstSharedPtr host);
+  std::vector<HostCostPair> calculateBatchCosts(const Upstream::HostVector& hosts);
+  void prefetchHostDataBatch(const Upstream::HostVector& hosts, size_t start_index) const;
   
   void onHostSetUpdate(const Upstream::HostVector& hosts_added,
                        const Upstream::HostVector& hosts_removed);
   
   int64_t getCachedTimeNanos() const;
-  void prefetchHostDataIntelligent(const Upstream::HostVector& hosts,
-                                   size_t primary_idx, size_t secondary_idx) const;
+  void prefetchHostData(const Upstream::HostVector& hosts,
+                        size_t primary_idx, size_t secondary_idx) const;
 
   const Upstream::ClusterInfo& cluster_info_;
   TimeSource& time_source_;

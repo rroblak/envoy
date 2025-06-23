@@ -81,13 +81,13 @@ void PeakEwmaLoadBalancer::onHostSetUpdate(
 }
 
 PeakEwmaLoadBalancer::HostStatIterator 
-PeakEwmaLoadBalancer::findHostStatsOptimized(Upstream::HostConstSharedPtr host) {
+PeakEwmaLoadBalancer::findHostStats(Upstream::HostConstSharedPtr host) {
   return host_stats_map_.find(host);
 }
 
-double PeakEwmaLoadBalancer::calculateHostCostOptimized(
+double PeakEwmaLoadBalancer::calculateHostCost(
     Upstream::HostConstSharedPtr host, HostStatIterator& iterator) {
-  iterator = findHostStatsOptimized(host);
+  iterator = findHostStats(host);
   if (ABSL_PREDICT_FALSE(iterator == host_stats_map_.end())) {
     return std::numeric_limits<double>::max();
   }
@@ -116,7 +116,7 @@ double PeakEwmaLoadBalancer::calculateHostCostBranchless(double rtt_ewma, double
   return has_rtt ? normal_cost : (has_requests ? penalty_cost : zero_cost);
 }
 
-void PeakEwmaLoadBalancer::prefetchHostData(
+void PeakEwmaLoadBalancer::prefetchHostDataBatch(
     const Upstream::HostVector& hosts, size_t start_index) const {
   const size_t host_count = hosts.size();
   const size_t prefetch_end = std::min(start_index + kLoopUnrollFactor, host_count);
@@ -127,7 +127,7 @@ void PeakEwmaLoadBalancer::prefetchHostData(
 }
 
 std::vector<PeakEwmaLoadBalancer::HostCostPair>
-PeakEwmaLoadBalancer::calculateBatchCostsOptimized(const Upstream::HostVector& hosts) {
+PeakEwmaLoadBalancer::calculateBatchCosts(const Upstream::HostVector& hosts) {
   std::vector<HostCostPair> results;
   results.reserve(hosts.size());
   
@@ -136,7 +136,7 @@ PeakEwmaLoadBalancer::calculateBatchCostsOptimized(const Upstream::HostVector& h
   
   for (size_t i = 0; i < unrolled_end; i += kLoopUnrollFactor) {
     if (i + (kLoopUnrollFactor * 2) < host_count) {
-      prefetchHostData(hosts, i + kLoopUnrollFactor);
+      prefetchHostDataBatch(hosts, i + kLoopUnrollFactor);
     }
     
     for (size_t j = 0; j < kLoopUnrollFactor; ++j) {
@@ -144,7 +144,7 @@ PeakEwmaLoadBalancer::calculateBatchCostsOptimized(const Upstream::HostVector& h
       const auto& host = hosts[host_index];
       
       HostStatIterator iterator;
-      const double cost = calculateHostCostOptimized(host, iterator);
+      const double cost = calculateHostCost(host, iterator);
       results.emplace_back(host, cost);
     }
   }
@@ -152,7 +152,7 @@ PeakEwmaLoadBalancer::calculateBatchCostsOptimized(const Upstream::HostVector& h
   for (size_t i = unrolled_end; i < host_count; ++i) {
     const auto& host = hosts[i];
     HostStatIterator iterator;
-    const double cost = calculateHostCostOptimized(host, iterator);
+    const double cost = calculateHostCost(host, iterator);
     results.emplace_back(host, cost);
   }
   
@@ -160,7 +160,7 @@ PeakEwmaLoadBalancer::calculateBatchCostsOptimized(const Upstream::HostVector& h
 }
 
 
-Upstream::HostConstSharedPtr PeakEwmaLoadBalancer::selectFromTwoCandidatesOptimized(
+Upstream::HostConstSharedPtr PeakEwmaLoadBalancer::selectFromTwoCandidates(
     const Upstream::HostVector& hosts, uint64_t random_value) {
   const size_t host_count = hosts.size();
   const size_t first_index = random_value % host_count;
@@ -170,13 +170,13 @@ Upstream::HostConstSharedPtr PeakEwmaLoadBalancer::selectFromTwoCandidatesOptimi
   const auto& second_host = hosts[second_index];
 
   // Use intelligent prefetching for the two specific hosts we need
-  prefetchHostDataIntelligent(hosts, first_index, second_index);
+  prefetchHostData(hosts, first_index, second_index);
 
   HostStatIterator first_iterator;
   HostStatIterator second_iterator;
   
-  const double first_cost = calculateHostCostOptimized(first_host, first_iterator);
-  const double second_cost = calculateHostCostOptimized(second_host, second_iterator);
+  const double first_cost = calculateHostCost(first_host, first_iterator);
+  const double second_cost = calculateHostCost(second_host, second_iterator);
 
   const bool costs_equal = (first_cost == second_cost);
   const bool prefer_first = costs_equal ? 
@@ -217,7 +217,7 @@ PeakEwmaLoadBalancer::chooseHostOnce(ABSL_ATTRIBUTE_UNUSED Upstream::LoadBalance
     return hosts_to_consider[0];
   }
 
-  return selectFromTwoCandidatesOptimized(hosts_to_consider, random_.random());
+  return selectFromTwoCandidates(hosts_to_consider, random_.random());
 }
 
 int64_t PeakEwmaLoadBalancer::getCachedTimeNanos() const {
@@ -229,7 +229,7 @@ int64_t PeakEwmaLoadBalancer::getCachedTimeNanos() const {
   return cached_time_nanos_;
 }
 
-void PeakEwmaLoadBalancer::prefetchHostDataIntelligent(
+void PeakEwmaLoadBalancer::prefetchHostData(
     const Upstream::HostVector& hosts, size_t primary_idx, size_t secondary_idx) const {
   // Prefetch the two candidates we'll actually use
   __builtin_prefetch(hosts[primary_idx].get(), kPrefetchReadHint, kPrefetchHighLocality);

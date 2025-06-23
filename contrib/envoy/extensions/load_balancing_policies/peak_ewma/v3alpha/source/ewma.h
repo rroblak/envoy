@@ -19,7 +19,7 @@ namespace {
  * 
  * Optimized for the range [-10, 0] which covers typical decay scenarios.
  */
-inline double fastExpOptimized(double x) {
+inline double fastExp(double x) {
   // Clamp to reasonable range for decay calculations
   if (x >= 0.0) return 1.0;
   if (x <= -10.0) return 0.0;
@@ -55,7 +55,7 @@ public:
     
     // Calculate alpha = 1 - exp(-time_gap / tau)
     const double ratio = -static_cast<double>(time_gap_nanos) / tau_nanos;
-    return 1.0 - fastExpOptimized(ratio);
+    return 1.0 - fastExp(ratio);
   }
 };
 } // namespace
@@ -126,7 +126,7 @@ public:
       // Only apply decay if more than 1ms has passed to avoid excessive decay
       if (time_gap > 1000000) {  // 1ms in nanoseconds
         const double ratio = -static_cast<double>(time_gap) / tau_nanos_;
-        const double decay_factor = fastExpOptimized(ratio);
+        const double decay_factor = fastExp(ratio);
         ewma_value_ *= decay_factor;
         last_update_timestamp_ = current_timestamp_nanos;
       }
@@ -155,34 +155,6 @@ private:
   int64_t last_update_timestamp_ = 0; // Timestamp of last EWMA update
 };
 
-/**
- * Legacy EWMA calculator for backward compatibility.
- * @deprecated Use PeakEwmaCalculator for new implementations.
- */
-class EwmaCalculator {
-public:
-  EwmaCalculator(double smoothing_factor, double initial_value)
-      : smoothing_factor_(smoothing_factor), ewma_value_(initial_value) {
-    ASSERT(smoothing_factor > 0.0 && smoothing_factor < 1.0, "Smoothing factor out of range");
-    ASSERT(!std::isnan(initial_value), "Initial EWMA value cannot be NaN");
-  }
-
-  void insert(double sample) {
-    ASSERT(!std::isnan(sample), "EWMA sample cannot be NaN");
-    ewma_value_ = (sample * smoothing_factor_) + (ewma_value_ * (1.0 - smoothing_factor_));
-  }
-
-  double value() const { return ewma_value_; }
-
-  void reset(double initial_value) {
-    ASSERT(!std::isnan(initial_value), "Initial EWMA value cannot be NaN");
-    ewma_value_ = initial_value;
-  }
-
-private:
-  const double smoothing_factor_;
-  double ewma_value_;
-};
 
 } // namespace PeakEwma
 } // namespace LoadBalancingPolicies
