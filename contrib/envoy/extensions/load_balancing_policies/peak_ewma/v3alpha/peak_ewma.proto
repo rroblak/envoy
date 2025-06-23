@@ -54,23 +54,4 @@ message PeakEwma {
     gt {nanos: 0}
   }];
 
-  // The default RTT value used for hosts with no measurement history. This provides a baseline
-  // cost for new hosts entering the cluster or hosts that have been idle.
-  //
-  // The default RTT affects load balancing behavior:
-  // - Too low: New hosts may receive excessive traffic before their true performance is measured
-  // - Too high: New hosts may be unfairly penalized and receive little traffic
-  //
-  // Recommended values:
-  // - Local/same-zone services: 1-10ms  
-  // - Cross-zone services: 10-50ms
-  // - Cross-region services: 50-200ms
-  // - Internet/external services: 100ms-1s
-  //
-  // This should represent a conservative (slightly pessimistic) estimate of expected RTT for
-  // your environment. The EWMA will quickly converge to actual measured values as traffic flows.
-  google.protobuf.Duration default_rtt = 2 [(validate.rules).duration = {
-    required: true,
-    gt {nanos: 0}
-  }];
 }

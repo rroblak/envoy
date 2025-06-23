@@ -8,6 +8,7 @@
 #include "absl/container/flat_hash_map.h"
 #include "contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/peak_ewma.pb.h"
 
+#include <limits>
 #include <vector>
 
 namespace Envoy {
@@ -16,6 +17,7 @@ namespace LoadBalancingPolicies {
 namespace PeakEwma {
 
 constexpr int64_t kDefaultDecayTimeSeconds = 10;
+constexpr double kPenaltyValue = static_cast<double>(std::numeric_limits<int64_t>::max() >> 16);
 constexpr size_t kCacheLineAlignment = 64;
 constexpr size_t kLoopUnrollFactor = 4;
 constexpr int kPrefetchReadHint = 0;
@@ -30,7 +32,7 @@ class PeakEwmaLoadBalancerFactory;
 
 class alignas(kCacheLineAlignment) PeakEwmaHostStats {
 public:
-  PeakEwmaHostStats(int64_t tau_nanos, double default_rtt, Stats::Scope& scope,
+  PeakEwmaHostStats(int64_t tau_nanos, Stats::Scope& scope,
                     const Upstream::Host& host, TimeSource& time_source);
 
   double getEwmaRttMs() const;
@@ -76,7 +78,6 @@ private:
   const Upstream::ClusterInfo& cluster_info_;
   TimeSource& time_source_;
   const envoy::extensions::load_balancing_policies::peak_ewma::v3alpha::PeakEwma config_proto_;
-  const double default_rtt_ms_;
   const int64_t tau_nanos_;
   Common::CallbackHandlePtr member_update_cb_handle_;
   HostStatsMap host_stats_map_;

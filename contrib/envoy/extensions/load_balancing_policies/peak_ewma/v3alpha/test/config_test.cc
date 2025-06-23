@@ -71,8 +71,6 @@ TEST_F(PeakEwmaConfigTest, LoadConfigWithDefaults) {
   
   // Create a minimal config proto
   envoy::extensions::load_balancing_policies::peak_ewma::v3alpha::PeakEwma proto_config;
-  proto_config.mutable_default_rtt()->set_seconds(1);
-  proto_config.set_rtt_smoothing_factor(0.5);
   
   auto result = factory.loadConfig(context, proto_config);
   EXPECT_TRUE(result.ok());
@@ -81,8 +79,6 @@ TEST_F(PeakEwmaConfigTest, LoadConfigWithDefaults) {
   // Verify the config holds the proto
   const auto* config = dynamic_cast<const PeakEwmaLbConfig*>(result.value().get());
   EXPECT_NE(config, nullptr);
-  EXPECT_EQ(config->proto_config_.rtt_smoothing_factor(), 0.5);
-  EXPECT_EQ(config->proto_config_.default_rtt().seconds(), 1);
 }
 
 TEST_F(PeakEwmaConfigTest, LoadConfigWithCustomValues) {
@@ -91,16 +87,14 @@ TEST_F(PeakEwmaConfigTest, LoadConfigWithCustomValues) {
   
   // Create config with custom values
   envoy::extensions::load_balancing_policies::peak_ewma::v3alpha::PeakEwma proto_config;
-  proto_config.mutable_default_rtt()->set_nanos(500000000);  // 0.5 seconds
-  proto_config.set_rtt_smoothing_factor(0.8);
+  proto_config.mutable_decay_time()->set_seconds(5);  // 5 second decay time
   
   auto result = factory.loadConfig(context, proto_config);
   EXPECT_TRUE(result.ok());
   
   const auto* config = dynamic_cast<const PeakEwmaLbConfig*>(result.value().get());
   EXPECT_NE(config, nullptr);
-  EXPECT_EQ(config->proto_config_.rtt_smoothing_factor(), 0.8);
-  EXPECT_EQ(config->proto_config_.default_rtt().nanos(), 500000000);
+  EXPECT_EQ(config->proto_config_.decay_time().seconds(), 5);
 }
 
 TEST_F(PeakEwmaConfigTest, CreateThreadAwareLoadBalancer) {
@@ -109,8 +103,6 @@ TEST_F(PeakEwmaConfigTest, CreateThreadAwareLoadBalancer) {
   
   // Create config
   envoy::extensions::load_balancing_policies::peak_ewma::v3alpha::PeakEwma proto_config;
-  proto_config.mutable_default_rtt()->set_seconds(1);
-  proto_config.set_rtt_smoothing_factor(0.5);
   
   auto config_result = factory.loadConfig(context, proto_config);
   EXPECT_TRUE(config_result.ok());
@@ -161,21 +153,17 @@ TEST_F(PeakEwmaConfigTest, ConfigValidation) {
   // Test that extreme values are handled
   envoy::extensions::load_balancing_policies::peak_ewma::v3alpha::PeakEwma proto_config;
   
-  // Very small smoothing factor
-  proto_config.set_rtt_smoothing_factor(0.01);
-  proto_config.mutable_default_rtt()->set_nanos(1000000);  // 1ms
+  // Very small decay time
+  proto_config.mutable_decay_time()->set_nanos(1000000);  // 1ms
   
   PeakEwmaLbConfig config(proto_config);
-  EXPECT_EQ(config.proto_config_.rtt_smoothing_factor(), 0.01);
-  EXPECT_EQ(config.proto_config_.default_rtt().nanos(), 1000000);
+  EXPECT_EQ(config.proto_config_.decay_time().nanos(), 1000000);
   
-  // Very large smoothing factor (close to 1.0)
-  proto_config.set_rtt_smoothing_factor(0.99);
-  proto_config.mutable_default_rtt()->set_seconds(10);
+  // Very large decay time
+  proto_config.mutable_decay_time()->set_seconds(300);
   
   PeakEwmaLbConfig config2(proto_config);
-  EXPECT_EQ(config2.proto_config_.rtt_smoothing_factor(), 0.99);
-  EXPECT_EQ(config2.proto_config_.default_rtt().seconds(), 10);
+  EXPECT_EQ(config2.proto_config_.decay_time().seconds(), 300);
 }
 
 TEST_F(PeakEwmaConfigTest, MultipleLoadBalancerInstances) {
@@ -183,8 +171,6 @@ TEST_F(PeakEwmaConfigTest, MultipleLoadBalancerInstances) {
   NiceMock<Server::Configuration::MockServerFactoryContext> context;
   
   envoy::extensions::load_balancing_policies::peak_ewma::v3alpha::PeakEwma proto_config;
-  proto_config.mutable_default_rtt()->set_seconds(1);
-  proto_config.set_rtt_smoothing_factor(0.5);
   
   auto config_result = factory.loadConfig(context, proto_config);
   EXPECT_TRUE(config_result.ok());

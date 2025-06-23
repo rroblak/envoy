@@ -16,6 +16,9 @@
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 
+#include <chrono>
+#include <iostream>
+
 using testing::_;
 using testing::DoAll;
 using testing::Return;
@@ -74,7 +77,6 @@ public:
     }));
 
     Upstream::LoadBalancerParams params{priority_set_, nullptr};
-    config_.mutable_default_rtt()->set_seconds(1);
     config_.mutable_decay_time()->set_seconds(10);
     
     lb_ = std::make_unique<PeakEwmaLoadBalancer>(
@@ -307,6 +309,79 @@ TEST_F(PeakEwmaLoadBalancerTest, SelectExistingConnection) {
   std::vector<uint8_t> hash_key;
   auto result = lb_->selectExistingConnection(nullptr, *hosts_[0], hash_key);
   EXPECT_FALSE(result.has_value());
+}
+
+TEST_F(PeakEwmaLoadBalancerTest, PenaltyBasedSystemForNewHosts) {
+  // Test penalty-based system for hosts with no RTT history
+  
+  // Host 0: No RTT history, no active requests (cost = 0.0)
+  hosts_[0]->stats().rq_active_.set(0);
+  
+  // Host 1: No RTT history, has active requests (cost = penalty + active_requests)
+  hosts_[1]->stats().rq_active_.set(2);
+  
+  // Host 2: Has RTT history with normal cost calculation
+  setHostStats(hosts_[2], std::chrono::milliseconds(50), 1);  // cost = 50 * 2 = 100
+  
+  // Force P2C to select hosts_[0] (no history, no active) vs hosts_[1] (no history, has active)
+  // random_value = 0: first_choice = 0, second_choice = 1
+  EXPECT_CALL(random_, random()).WillOnce(Return(0));
+  
+  auto result = lb_->chooseHost(nullptr);
+  // Should select hosts_[0] because it has cost 0.0 vs penalty + 2 for hosts_[1]
+  EXPECT_EQ(result.host, hosts_[0]);
+  
+  // Now test penalty vs normal cost
+  // Force P2C to select hosts_[1] (penalty + 2) vs hosts_[2] (100)
+  // random_value = 1: first_choice = 1, second_choice = 2
+  EXPECT_CALL(random_, random()).WillOnce(Return(1));
+  
+  result = lb_->chooseHost(nullptr);
+  // Should select hosts_[2] because normal cost (100) < penalty (very large number)
+  EXPECT_EQ(result.host, hosts_[2]);
+}
+
+TEST_F(PeakEwmaLoadBalancerTest, QuickBenchmarkPenaltyBasedSystem) {
+  // Quick benchmark test for penalty-based host selection performance
+  const int iterations = 10000;  // Reduced for faster execution
+  
+  // Set up a mix of hosts: some with RTT history, some without
+  for (size_t i = 0; i < hosts_.size(); ++i) {
+    if (i % 2 == 0) {
+      // Hosts with RTT history
+      setHostStats(hosts_[i], std::chrono::milliseconds(50 + i * 10), i);
+    } else {
+      // New hosts without RTT history
+      hosts_[i]->stats().rq_active_.set(i);
+    }
+  }
+
+  // Set up random number sequence
+  EXPECT_CALL(random_, random()).Times(iterations).WillRepeatedly(Return(42));
+
+  auto start = std::chrono::high_resolution_clock::now();
+  
+  // Run many host selections to measure performance
+  for (int i = 0; i < iterations; ++i) {
+    auto result = lb_->chooseHost(nullptr);
+    EXPECT_NE(result.host, nullptr);
+  }
+  
+  auto end = std::chrono::high_resolution_clock::now();
+  auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+  
+  // Print benchmark results
+  double selections_per_second = static_cast<double>(iterations) / (duration.count() / 1000000.0);
+  
+  std::cout << "\n=== Peak EWMA Penalty-Based System Quick Benchmark ===" << std::endl;
+  std::cout << "Total iterations: " << iterations << std::endl;
+  std::cout << "Total time: " << duration.count() << " μs" << std::endl;
+  std::cout << "Average time per selection: " << static_cast<double>(duration.count()) / iterations << " μs" << std::endl;
+  std::cout << "Selections per second: " << static_cast<int>(selections_per_second) << std::endl;
+  std::cout << "=======================================================" << std::endl;
+  
+  // Performance assertion: should be able to do at least 10K selections per second (relaxed)
+  EXPECT_GT(selections_per_second, 10000) << "Performance regression detected!";
 }
 
 } // namespace

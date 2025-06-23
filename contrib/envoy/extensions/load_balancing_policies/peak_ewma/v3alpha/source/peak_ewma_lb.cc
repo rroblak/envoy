@@ -16,10 +16,10 @@ namespace Extensions {
 namespace LoadBalancingPolicies {
 namespace PeakEwma {
 
-PeakEwmaHostStats::PeakEwmaHostStats(int64_t tau_nanos, double default_rtt,
+PeakEwmaHostStats::PeakEwmaHostStats(int64_t tau_nanos,
                                      Stats::Scope& scope, const Upstream::Host& host,
                                      TimeSource& time_source)
-    : rtt_ewma_(tau_nanos, default_rtt),
+    : rtt_ewma_(tau_nanos, 0.0),
       time_source_(time_source),
       cost_stat_(scope.gaugeFromString(
           "peak_ewma." + host.address()->asString() + ".cost",
@@ -49,8 +49,6 @@ PeakEwmaLoadBalancer::PeakEwmaLoadBalancer(
       cluster_info_(cluster_info),
       time_source_(time_source),
       config_proto_(config),
-      default_rtt_ms_(static_cast<double>(
-          DurationUtil::durationToMilliseconds(config_proto_.default_rtt()))),
       tau_nanos_(config_proto_.has_decay_time() ? 
           DurationUtil::durationToMilliseconds(config_proto_.decay_time()) * 1000000LL :
           kDefaultDecayTimeSeconds * 1000000000LL) {
@@ -69,7 +67,7 @@ void PeakEwmaLoadBalancer::onHostSetUpdate(
     const Upstream::HostVector& hosts_added,
     const Upstream::HostVector& hosts_removed) {
   for (const auto& host : hosts_added) {
-    host_stats_map_.try_emplace(host, tau_nanos_, default_rtt_ms_,
+    host_stats_map_.try_emplace(host, tau_nanos_,
                                 cluster_info_.statsScope(), *host, time_source_);
   }
   for (const auto& host : hosts_removed) {
@@ -92,7 +90,19 @@ double PeakEwmaLoadBalancer::calculateHostCostOptimized(
   PeakEwmaHostStats& host_stats = iterator->second;
   const double rtt_ewma = host_stats.getEwmaRttMs();
   const double active_requests = static_cast<double>(host->stats().rq_active_.value());
-  const double cost = rtt_ewma * (active_requests + 1.0);
+  
+  double cost;
+  if (rtt_ewma == 0.0 && active_requests > 0) {
+    // Host has no RTT history but has pending requests - apply penalty
+    cost = kPenaltyValue + active_requests;
+  } else if (rtt_ewma == 0.0) {
+    // Host has no RTT history and no pending requests - allow first request
+    cost = 0.0;
+  } else {
+    // Normal case: use RTT-based cost calculation
+    cost = rtt_ewma * (active_requests + 1.0);
+  }
+  
   host_stats.setComputedCostStat(cost);
   return cost;
 }
