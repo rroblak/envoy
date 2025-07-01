@@ -17,7 +17,7 @@ namespace LoadBalancingPolicies {
 namespace PeakEwma {
 
 constexpr int64_t kDefaultDecayTimeSeconds = 10;
-constexpr double kPenaltyValue = static_cast<double>(std::numeric_limits<int64_t>::max() >> 16);
+constexpr double kPenaltyValue = static_cast<double>(std::numeric_limits<int64_t>::max() >> 16);  // Finagle-compatible penalty
 constexpr size_t kCacheLineAlignment = 64;
 constexpr size_t kLoopUnrollFactor = 4;
 constexpr int kPrefetchReadHint = 0;
@@ -30,7 +30,7 @@ class PeakEwmaTestPeer;
 
 class PeakEwmaLoadBalancerFactory;
 
-class alignas(kCacheLineAlignment) PeakEwmaHostStats {
+class alignas(kCacheLineAlignment) PeakEwmaHostStats : public Upstream::HostLbPolicyData {
 public:
   PeakEwmaHostStats(int64_t tau_nanos, Stats::Scope& scope,
                     const Upstream::Host& host, TimeSource& time_source);

@@ -73,6 +73,12 @@ void PeakEwmaLoadBalancer::onHostSetUpdate(
     const Upstream::HostVector& hosts_added,
     const Upstream::HostVector& hosts_removed) {
   for (const auto& host : hosts_added) {
+    // Create PeakEwmaHostStats and set it as LB policy data on the host
+    auto stats = std::make_unique<PeakEwmaHostStats>(tau_nanos_,
+                                                     cluster_info_.statsScope(), *host, time_source_);
+    host->setLbPolicyData(std::move(stats));
+    
+    // Also maintain the internal map for compatibility
     host_stats_map_.try_emplace(host, tau_nanos_,
                                 cluster_info_.statsScope(), *host, time_source_);
   }
@@ -88,19 +94,28 @@ PeakEwmaLoadBalancer::findHostStats(Upstream::HostConstSharedPtr host) {
 
 double PeakEwmaLoadBalancer::calculateHostCost(
     Upstream::HostConstSharedPtr host, HostStatIterator& iterator) {
-  iterator = findHostStats(host);
-  if (ABSL_PREDICT_FALSE(iterator == host_stats_map_.end())) {
-    return std::numeric_limits<double>::max();
+  // Try to get stats from the host's LB policy data first
+  auto peak_ewma_stats_opt = host->typedLbPolicyData<PeakEwmaHostStats>();
+  PeakEwmaHostStats* host_stats = nullptr;
+  
+  if (peak_ewma_stats_opt.has_value()) {
+    host_stats = &peak_ewma_stats_opt.ref();
+  } else {
+    // Fallback to internal map
+    iterator = findHostStats(host);
+    if (ABSL_PREDICT_FALSE(iterator == host_stats_map_.end())) {
+      return std::numeric_limits<double>::max();
+    }
+    host_stats = &iterator->second;
   }
 
   // Use cached time to reduce syscall overhead
   const int64_t cached_time = getCachedTimeNanos();
-  PeakEwmaHostStats& host_stats = iterator->second;
-  const double rtt_ewma = host_stats.getEwmaRttMs(cached_time);
+  const double rtt_ewma = host_stats->getEwmaRttMs(cached_time);
   const double active_requests = static_cast<double>(host->stats().rq_active_.value());
   
   const double cost = calculateHostCostBranchless(rtt_ewma, active_requests);
-  host_stats.setComputedCostStat(cost);
+  host_stats->setComputedCostStat(cost);
   return cost;
 }
 
@@ -108,13 +123,14 @@ double PeakEwmaLoadBalancer::calculateHostCostBranchless(double rtt_ewma, double
   const bool has_rtt = (rtt_ewma > 0.0);
   const bool has_requests = (active_requests > 0.0);
   
-  // Branchless cost calculation using conditional arithmetic
-  const double normal_cost = rtt_ewma * (active_requests + 1.0);
-  const double penalty_cost = kPenaltyValue + active_requests;
-  const double zero_cost = 0.0;
-  
-  // Use arithmetic instead of branching for better performance
-  return has_rtt ? normal_cost : (has_requests ? penalty_cost : zero_cost);
+  // Match Finagle's logic: penalty only when no RTT data AND has active requests
+  if (!has_rtt && has_requests) {
+    return kPenaltyValue + active_requests;
+  } else if (has_rtt) {
+    return rtt_ewma * (active_requests + 1.0);
+  } else {
+    return 0.0;  // No RTT data and no active requests
+  }
 }
 
 void PeakEwmaLoadBalancer::prefetchHostDataBatch(

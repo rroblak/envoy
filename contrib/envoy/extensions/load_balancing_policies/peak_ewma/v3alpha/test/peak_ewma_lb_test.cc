@@ -90,6 +90,8 @@ public:
   void setHostStats(Upstream::HostConstSharedPtr host, std::chrono::milliseconds rtt,
                     uint32_t active_requests) {
     host->stats().rq_active_.set(active_requests);
+    
+    // Use internal map for tests (mock hosts don't support setLbPolicyData)
     PeakEwmaTestPeer peer(*lb_);
     auto& map = peer.hostStatsMap();
     auto it = map.find(host);
@@ -196,7 +198,7 @@ TEST_F(PeakEwmaLoadBalancerTest, NoHostsAvailable) {
 TEST_F(PeakEwmaLoadBalancerTest, HostStatsUpdate) {
   setHostStats(hosts_[0], std::chrono::milliseconds(100), 5);
   
-  // Verify host stats are properly stored and can be retrieved
+  // Verify host stats are properly stored and can be retrieved via internal map
   PeakEwmaTestPeer peer(*lb_);
   auto& map = peer.hostStatsMap();
   auto it = map.find(hosts_[0]);
