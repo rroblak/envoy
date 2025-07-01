@@ -13,17 +13,17 @@ envoy_cc_library(
     name = "peak_ewma_lb_lib",
     srcs = [
         "peak_ewma_lb.cc",
-        "peak_ewma_filter.cc",
-        "peak_ewma_filter_config.cc",
     ],
     hdrs = [
         "ewma.h",
         "peak_ewma_lb.h",
-        "peak_ewma_filter.h",
-        "peak_ewma_filter_config.h",
     ],
     repository = "@envoy",
-    visibility = ["//contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/test:__pkg__"],
+    visibility = [
+        "//contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/test:__pkg__",
+        "//contrib/envoy/extensions/filters/http/peak_ewma/v3alpha/source:__pkg__",
+        "//test/extensions/load_balancing_policies/peak_ewma:__pkg__",
+    ],
     deps = [
         "//source/common/common:utility_lib",
         "//source/common/config:utility_lib",

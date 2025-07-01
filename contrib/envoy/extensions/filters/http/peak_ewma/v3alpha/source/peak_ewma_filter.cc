@@ -1,10 +1,10 @@
-#include "contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/source/peak_ewma_filter.h"
+#include "contrib/envoy/extensions/filters/http/peak_ewma/v3alpha/source/peak_ewma_filter.h"
 
 #include "envoy/stream_info/stream_info.h"
 
 namespace Envoy {
 namespace Extensions {
-namespace LoadBalancingPolicies {
+namespace HttpFilters {
 namespace PeakEwma {
 
 void PeakEwmaRttFilter::log(const Http::RequestHeaderMap*, const Http::ResponseHeaderMap*,
@@ -29,15 +29,15 @@ void PeakEwmaRttFilter::log(const Http::RequestHeaderMap*, const Http::ResponseH
   }
 
   const auto& host_description = upstream_info->upstreamHost();
-  auto peak_ewma_stats_opt = host_description->typedLbPolicyData<PeakEwmaHostStats>();
+  auto peak_ewma_stats_opt = host_description->typedLbPolicyData<LoadBalancingPolicies::PeakEwma::PeakEwmaHostStats>();
   if (peak_ewma_stats_opt.has_value()) {
-    PeakEwmaHostStats& stats = peak_ewma_stats_opt.ref();
+    LoadBalancingPolicies::PeakEwma::PeakEwmaHostStats& stats = peak_ewma_stats_opt.ref();
     stats.recordRttSample(
         std::chrono::duration_cast<std::chrono::milliseconds>(rtt_ns));
   }
 }
 
 } // namespace PeakEwma
-} // namespace LoadBalancingPolicies
+} // namespace HttpFilters
 } // namespace Extensions
 } // namespace Envoy

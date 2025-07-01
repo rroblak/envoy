@@ -6,6 +6,7 @@
 #include "envoy/upstream/upstream.h"
 
 #include "source/common/common/assert.h"
+#include "source/common/common/utility.h"
 #include "source/common/protobuf/utility.h"
 
 #include "absl/base/attributes.h"

@@ -8,7 +8,7 @@
 
 namespace Envoy {
 namespace Extensions {
-namespace LoadBalancingPolicies {
+namespace HttpFilters {
 namespace PeakEwma {
 
 class PeakEwmaRttFilter : public Http::PassThroughFilter {
@@ -18,6 +18,6 @@ public:
 };
 
 } // namespace PeakEwma
-} // namespace LoadBalancingPolicies
+} // namespace HttpFilters
 } // namespace Extensions
 } // namespace Envoy
