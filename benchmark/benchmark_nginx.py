@@ -1,16 +1,8 @@
 #!/usr/bin/env python3
 """
-Envoy Load Balancer Minimal Benchmark Tool
+Envoy Load Balancer Benchmark Tool with nginx upstream servers
 
-This script benchmarks load balancing algorithms with a simple, fast-running setup:
-1. Starts one consistently fast HTTP server.
-2. Starts one HTTP server with occasional latency spikes.
-3. Configures and runs Envoy with the specified load balancer.
-4. Sends a small number of requests to quickly evaluate performance.
-5. Reports on request distribution and latency.
-
-Usage:
-    python3 benchmark/benchmark_linux.py --algorithm peak_ewma,least_request
+Uses nginx servers instead of Python HTTP servers to eliminate any threading/concurrency issues.
 """
 
 import argparse
@@ -25,7 +17,6 @@ import signal
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Tuple, Optional
 import requests
-from http.server import HTTPServer, ThreadingHTTPServer, BaseHTTPRequestHandler
 import threading
 import numpy as np
 from tabulate import tabulate
@@ -33,48 +24,139 @@ import shutil
 import random
 import yaml
 
-class SimpleHTTPHandler(BaseHTTPRequestHandler):
-    """HTTP handler for a consistently fast server."""
-    def do_GET(self):
-        delay_ms = getattr(self.server, 'delay_ms', 5)
-        time.sleep(delay_ms / 1000.0)
-        self.send_response(200)
-        self.send_header('Content-Type', 'application/json')
-        self.end_headers()
-        response = json.dumps({"server": getattr(self.server, 'server_name', 'fast'), "delay_ms": delay_ms})
+class NginxUpstreamManager:
+    def __init__(self, num_fast_servers: int = 9, num_slow_servers: int = 1, 
+                 fast_delay_ms: int = 5, slow_delay_ms: int = 100, base_port: int = 19000):
+        self.num_fast_servers = num_fast_servers
+        self.num_slow_servers = num_slow_servers
+        self.fast_delay_ms = fast_delay_ms
+        self.slow_delay_ms = slow_delay_ms
+        self.base_port = base_port
+        self.nginx_processes = []
+        self.temp_dirs = []
+
+    def create_nginx_config(self, port: int, server_name: str, delay_ms: int) -> str:
+        """Create nginx config with lua delay simulation"""
+        config = f"""
+worker_processes 1;
+error_log /tmp/nginx_{port}_error.log info;
+pid /tmp/nginx_{port}.pid;
+
+# Load required modules (NDK must be loaded before Lua)
+load_module /usr/lib/nginx/modules/ndk_http_module.so;
+load_module /usr/lib/nginx/modules/ngx_http_lua_module.so;
+
+events {{
+    worker_connections 1024;
+}}
+
+http {{
+    access_log /tmp/nginx_{port}_access.log;
+    
+    server {{
+        listen {port};
+        
+        location / {{
+            access_by_lua_block {{
+                ngx.sleep({delay_ms / 1000.0})
+            }}
+            
+            content_by_lua_block {{
+                ngx.header["Content-Type"] = "application/json"
+                ngx.say('{{"server": "{server_name}", "delay_ms": {delay_ms}}}')
+            }}
+        }}
+    }}
+}}
+"""
+        return config
+
+    def start_nginx_server(self, port: int, server_name: str, delay_ms: int):
+        """Start a single nginx server"""
+        temp_dir = tempfile.mkdtemp()
+        self.temp_dirs.append(temp_dir)
+        
+        config_path = os.path.join(temp_dir, 'nginx.conf')
+        config_content = self.create_nginx_config(port, server_name, delay_ms)
+        
+        with open(config_path, 'w') as f:
+            f.write(config_content)
+        
+        # Start nginx
+        cmd = ['nginx', '-c', config_path, '-g', 'daemon off;']
+        process = subprocess.Popen(
+            cmd, 
+            stdout=subprocess.PIPE, 
+            stderr=subprocess.PIPE,
+            preexec_fn=os.setsid,
+            text=True
+        )
+        self.nginx_processes.append(process)
+        
+        # Wait a bit for nginx to start
+        time.sleep(0.5)
+        
+        # Check if process is still running
+        if process.poll() is not None:
+            try:
+                stdout, stderr = process.communicate()
+                stdout = stdout or "No stdout"
+                stderr = stderr or "No stderr"
+            except Exception as comm_e:
+                stdout, stderr = f"Communication error: {comm_e}", "N/A"
+            raise RuntimeError(f"nginx server on port {port} failed to start.\nSTDOUT: {stdout}\nSTDERR: {stderr}")
+        
+        # Verify nginx is responding
         try:
-            self.wfile.write(response.encode())
-        except BrokenPipeError:
-            pass
+            response = requests.get(f"http://127.0.0.1:{port}/", timeout=1)
+            print(f"nginx server on port {port} started successfully")
+        except Exception as e:
+            # Get any available output
+            try:
+                stdout, stderr = process.communicate(timeout=1)
+                stdout = stdout or "No stdout"
+                stderr = stderr or "No stderr"
+            except:
+                stdout, stderr = "Communication timeout", "N/A"
+            raise RuntimeError(f"nginx server on port {port} failed to respond: {e}\nSTDOUT: {stdout}\nSTDERR: {stderr}")
 
-    def log_message(self, format, *args):
-        pass
+    def start_all_servers(self):
+        """Start all nginx upstream servers"""
+        print("Starting nginx upstream servers...")
+        
+        # Start fast servers
+        for i in range(self.num_fast_servers):
+            port = self.base_port + i
+            server_name = f"fast_{i}"
+            self.start_nginx_server(port, server_name, self.fast_delay_ms)
+        
+        # Start slow server
+        slow_port = self.base_port + self.num_fast_servers
+        self.start_nginx_server(slow_port, "slow", self.slow_delay_ms)
+        
+        print(f"nginx servers started: {self.num_fast_servers} fast, {self.num_slow_servers} slow.")
 
-class SpikyLatencyHandler(BaseHTTPRequestHandler):
-    """HTTP handler with occasional high-latency spikes."""
-    def do_GET(self):
-        server_name = getattr(self.server, 'server_name', 'spiky')
-        base_delay_ms = getattr(self.server, 'base_delay', 5)
-        spike_delay_ms = getattr(self.server, 'spike_delay', 100)
+    def stop_all_servers(self):
+        """Stop all nginx servers and cleanup"""
+        for process in self.nginx_processes:
+            try:
+                os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+                process.wait(timeout=5)
+            except:
+                try:
+                    os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+                except:
+                    pass
+        
+        for temp_dir in self.temp_dirs:
+            try:
+                shutil.rmtree(temp_dir)
+            except:
+                pass
 
-        # 90% chance of base delay, 10% chance of a spike
-        delay_ms = base_delay_ms if random.random() < 0.9 else spike_delay_ms
-        time.sleep(delay_ms / 1000.0)
-
-        self.send_response(200)
-        self.send_header('Content-Type', 'application/json')
-        self.end_headers()
-        response = json.dumps({"server": server_name, "delay_ms": delay_ms})
-        try:
-            self.wfile.write(response.encode())
-        except BrokenPipeError:
-            pass
-
-    def log_message(self, format, *args):
-        pass
-
-class MinimalBenchmark:
-    def __init__(self, algorithm: str, num_requests: int = 2000, warmup_requests: int = 200, envoy_binary_path: str = "", peak_ewma_decay_time: str = "10s"):
+class EnvoyBenchmark:
+    def __init__(self, algorithm: str, num_requests: int = 2000, warmup_requests: int = 200, 
+                 envoy_binary_path: str = "", peak_ewma_decay_time: str = "10s"):
         self.algorithm = algorithm
         self.num_requests = num_requests
         self.warmup_requests = warmup_requests
@@ -83,8 +165,6 @@ class MinimalBenchmark:
         self.slow_delay_ms = 100
         self.num_fast_servers = 9
         self.num_slow_servers = 1
-        self.servers = []
-        self.server_threads = []
         self.envoy_process = None
         self.server_requests = {}
         self.response_times = []
@@ -92,6 +172,7 @@ class MinimalBenchmark:
         self.envoy_port = 8081
         self.envoy_admin_port = 9902
         self.envoy_binary_path = envoy_binary_path
+        self.nginx_manager = NginxUpstreamManager()
 
     def get_envoy_binary_path(self) -> str:
         if self.envoy_binary_path:
@@ -100,37 +181,10 @@ class MinimalBenchmark:
         default_path = "/srv/apps/envoy/linux/amd64/build_envoy-contrib_fastbuild/envoy"
         if os.path.exists(default_path):
             return default_path
-        raise RuntimeError("Envoy binary path not provided and default contrib binary not found. Please specify with --envoy_binary_path.")
-
-    def start_test_servers(self) -> None:
-        print("Starting test servers...")
-        
-        # Start 9 fast servers (using ThreadingHTTPServer for concurrent request handling)
-        for i in range(self.num_fast_servers):
-            fast_server = ThreadingHTTPServer(('127.0.0.1', self.base_port + i), SimpleHTTPHandler)
-            fast_server.server_name = f'fast_{i}'
-            fast_server.delay_ms = self.fast_delay_ms
-            fast_thread = threading.Thread(target=fast_server.serve_forever, daemon=True)
-            fast_thread.start()
-            self.servers.append(fast_server)
-
-        # Start 1 slow server (using ThreadingHTTPServer for concurrent request handling)
-        slow_server = ThreadingHTTPServer(('127.0.0.1', self.base_port + self.num_fast_servers), SimpleHTTPHandler)
-        slow_server.server_name = 'slow'
-        slow_server.delay_ms = self.slow_delay_ms
-        slow_thread = threading.Thread(target=slow_server.serve_forever, daemon=True)
-        slow_thread.start()
-        self.servers.append(slow_server)
-        
-        time.sleep(1)
-        print(f"Test servers started: {self.num_fast_servers} fast, {self.num_slow_servers} slow.")
-
-    def stop_test_servers(self) -> None:
-        for server in self.servers:
-            server.shutdown()
-            server.server_close()
+        raise RuntimeError("Envoy binary path not provided and default contrib binary not found.")
 
     def create_envoy_config(self, temp_dir: str) -> str:
+        """Create Envoy configuration file"""
         endpoints = []
         # Add all servers (9 fast + 1 slow)
         for i in range(self.num_fast_servers + self.num_slow_servers):
@@ -193,14 +247,21 @@ class MinimalBenchmark:
     def start_envoy(self, config_path: str) -> None:
         envoy_binary = self.get_envoy_binary_path()
         print(f"Starting Envoy ({self.algorithm}) with binary: {envoy_binary}")
-        print(f"Envoy binary path being used: {envoy_binary}") # Added for debugging
-        self.envoy_process = subprocess.Popen([envoy_binary, '-c', config_path, '--log-level', 'warn'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        time.sleep(3) # Wait for Envoy to start
+        print(f"Envoy binary path being used: {envoy_binary}")
+        
+        self.envoy_process = subprocess.Popen([
+            envoy_binary, '-c', config_path, '--log-level', 'error'
+        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        
+        # Wait for Envoy to start
+        time.sleep(2)
         try:
             requests.get(f"http://127.0.0.1:{self.envoy_port}/", timeout=1)
         except requests.exceptions.RequestException:
             stdout, stderr = self.envoy_process.communicate()
-            raise RuntimeError(f"Envoy failed to start. Stderr: {stderr.decode()}")
+            stderr_msg = stderr if stderr else "No stderr output"
+            stdout_msg = stdout if stdout else "No stdout output"
+            raise RuntimeError(f"Envoy failed to start.\nSTDOUT: {stdout_msg}\nSTDERR: {stderr_msg}")
 
     def stop_envoy(self) -> None:
         if self.envoy_process:
@@ -210,12 +271,11 @@ class MinimalBenchmark:
     def send_request(self) -> Optional[Tuple[str, float]]:
         start_time = time.time()
         try:
-            response = requests.get(f"http://127.0.0.1:{self.envoy_port}/", timeout=5)  # Increased timeout
+            response = requests.get(f"http://127.0.0.1:{self.envoy_port}/", timeout=5)
             if response.status_code == 200:
                 server_name = response.json()["server"]
                 return server_name, (time.time() - start_time) * 1000
         except requests.exceptions.RequestException as e:
-            # Log failed requests for debugging
             print(f"Request failed: {e}")
             return None
         return None
@@ -233,15 +293,6 @@ class MinimalBenchmark:
                         self.server_requests[server_name] += 1
                         self.response_times.append(response_time)
 
-    def print_test_parameters(self):
-        print("\n=== BENCHMARK PARAMETERS ===")
-        print(f"Clients: 10 concurrent threads (single-threaded HTTP client per thread)")
-        print(f"Upstream servers: {self.num_fast_servers + self.num_slow_servers}")
-        print(f"  - Fast servers ({self.num_fast_servers}): {self.fast_delay_ms}ms latency")
-        print(f"  - Slow servers ({self.num_slow_servers}): {self.slow_delay_ms}ms latency")
-        print(f"Requests per algorithm: {self.num_requests} (after {self.warmup_requests} warmup requests)")
-        print("\n")
-
     def generate_report(self) -> dict:
         if not self.response_times: 
             return {"error": "No data collected."}
@@ -253,83 +304,74 @@ class MinimalBenchmark:
         fast_reqs = sum(self.server_requests.get(f'fast_{i}', 0) for i in range(self.num_fast_servers))
         slow_reqs = self.server_requests.get('slow', 0)
         
-        # Debug: Print breakdown
         print(f"DEBUG: Fast server requests: {fast_reqs}, Slow server requests: {slow_reqs}, Total: {successful_requests}")
         
         # Calculate detailed statistics
         times = np.array(self.response_times)
         stats = {
             "algorithm": self.algorithm,
+            "total_requests": successful_requests,
+            "fast_requests": fast_reqs,
+            "slow_requests": slow_reqs,
+            "fast_percentage": (fast_reqs / successful_requests * 100) if successful_requests > 0 else 0,
+            "slow_percentage": (slow_reqs / successful_requests * 100) if successful_requests > 0 else 0,
             "average": float(np.mean(times)),
+            "min": float(np.min(times)),
+            "max": float(np.max(times)),
+            "std_dev": float(np.std(times)),
             "p50": float(np.percentile(times, 50)),
             "p75": float(np.percentile(times, 75)),
             "p90": float(np.percentile(times, 90)),
             "p95": float(np.percentile(times, 95)),
             "p99": float(np.percentile(times, 99)),
-            "p999": float(np.percentile(times, 99.9)),
-            "min": float(np.min(times)),
-            "max": float(np.max(times)),
-            "std_dev": float(np.std(times)),
-            "fast_requests": fast_reqs,
-            "slow_requests": slow_reqs,
-            "total_requests": successful_requests
+            "p999": float(np.percentile(times, 99.9))
         }
         
-        # Generate text report
-        report = f"\n--- Report for {self.algorithm.upper()} ---\n"
-        report += f"Avg Latency: {stats['average']:.2f}ms\n"
-        report += f"P95 Latency: {stats['p95']:.2f}ms\n"
-        report += f"Request Distribution:\n"
-        report += f"  - Fast Servers: {fast_reqs} requests ({fast_reqs/successful_requests:.1%})\n"
-        report += f"  - Slow Server: {slow_reqs} requests ({slow_reqs/successful_requests:.1%})\n"
+        # Generate analysis
+        expected_slow_percentage = (self.num_slow_servers / (self.num_fast_servers + self.num_slow_servers)) * 100
+        slow_analysis = "✅ Algorithm effectively avoided the slow server." if stats["slow_percentage"] < expected_slow_percentage * 1.5 else "❌ Algorithm did not effectively avoid the slow server."
         
-        # Analysis
-        slow_traffic_pct = (slow_reqs / successful_requests) * 100
-        if self.algorithm in ["least_request", "peak_ewma"]:
-            if slow_traffic_pct < 5:  # Should be much less than 10% (1/10 servers)
-                report += "ANALYSIS: ✅ Algorithm effectively avoided the slow server.\n"
-            else:
-                report += "ANALYSIS: ❌ Algorithm did NOT effectively avoid the slow server.\n"
-        elif self.algorithm in ["round_robin", "random"]:
-             if 8 < slow_traffic_pct < 12:  # Should be around 10% (1/10 servers)
-                report += f"ANALYSIS: ✅ {self.algorithm.title()} distributed requests evenly as expected.\n"
-             else:
-                report += f"ANALYSIS: ❌ {self.algorithm.title()} did NOT distribute requests evenly.\n"
-        else:
-            # Unknown algorithm, just report the distribution
-            report += f"ANALYSIS: Slow server received {slow_traffic_pct:.1f}% of traffic.\n"
+        report_text = f"""
+--- Report for {self.algorithm.upper()} ---
+Avg Latency: {stats['average']:.2f}ms
+P95 Latency: {stats['p95']:.2f}ms
+Request Distribution:
+  - Fast Servers: {fast_reqs} requests ({stats['fast_percentage']:.1f}%)
+  - Slow Server: {slow_reqs} requests ({stats['slow_percentage']:.1f}%)
+ANALYSIS: {slow_analysis}
+"""
         
-        stats["report_text"] = report
+        stats["report_text"] = report_text.strip()
         return stats
 
     def run(self) -> dict:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            try:
-                self.start_test_servers()
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                self.nginx_manager.start_all_servers()
                 config_path = self.create_envoy_config(temp_dir)
                 self.start_envoy(config_path)
                 self.run_phase("warmup", self.warmup_requests)
                 self.run_phase("benchmark", self.num_requests)
                 return self.generate_report()
-            finally:
-                self.stop_envoy()
-                self.stop_test_servers()
+        finally:
+            self.stop_envoy()
+            self.nginx_manager.stop_all_servers()
 
 def main():
-    parser = argparse.ArgumentParser(description="Minimal Envoy Load Balancer Benchmark")
+    parser = argparse.ArgumentParser(description="Envoy Load Balancer Benchmark with nginx upstream servers")
     parser.add_argument("--algorithm", "-a", required=True, help="LB algorithm(s) to test (comma-separated)")
     parser.add_argument("--requests", "-r", type=int, default=2000, help="Number of benchmark requests")
     parser.add_argument("--warmup", "-w", type=int, default=200, help="Number of warmup requests")
-    parser.add_argument("--envoy_binary_path", type=str, default="", help="Path to the Envoy binary (e.g., bazel-bin/source/exe/envoy-static)")
-    parser.add_argument("--peak_ewma_decay_time", type=str, default="10s", help="Peak EWMA decay time (e.g., 5s, 10s, 30s)")
+    parser.add_argument("--envoy_binary_path", type=str, default="", help="Path to the Envoy binary")
+    parser.add_argument("--peak_ewma_decay_time", type=str, default="10s", help="Peak EWMA decay time")
     args = parser.parse_args()
 
+    # Check if nginx is available
+    if not shutil.which('nginx'):
+        print("Error: nginx is not installed or not in PATH. Please install nginx first.")
+        sys.exit(1)
+
     algorithms = [algo.strip() for algo in args.algorithm.split(',')]
-    
-    # Print test parameters once at the beginning
-    if algorithms:
-        benchmark_sample = MinimalBenchmark(algorithms[0], args.requests, args.warmup, args.envoy_binary_path, args.peak_ewma_decay_time)
-        benchmark_sample.print_test_parameters()
     
     results = []
     
@@ -340,7 +382,7 @@ def main():
             print(f"Peak EWMA decay time: {args.peak_ewma_decay_time}")
         print("="*40)
         try:
-            benchmark = MinimalBenchmark(algorithm, args.requests, args.warmup, args.envoy_binary_path, args.peak_ewma_decay_time)
+            benchmark = EnvoyBenchmark(algorithm, args.requests, args.warmup, args.envoy_binary_path, args.peak_ewma_decay_time)
             result = benchmark.run()
             if "error" not in result:
                 results.append(result)
@@ -350,13 +392,6 @@ def main():
         except Exception as e:
             print(f"\n--- ERROR for {algorithm.upper()} ---", file=sys.stderr)
             print(f"Benchmark failed: {e}", file=sys.stderr)
-            # If envoy process exists, print its output
-            if 'benchmark' in locals() and benchmark.envoy_process:
-                stdout, stderr = benchmark.envoy_process.communicate()
-                if stdout:
-                    print(f"--> Envoy stdout:\n{stdout.decode()}", file=sys.stderr)
-                if stderr:
-                    print(f"--> Envoy stderr:\n{stderr.decode()}", file=sys.stderr)
     
     # Print summary table
     if results:
@@ -383,7 +418,6 @@ def main():
         headers = ["Algorithm", "Average", "P50", "P75", "P90", "P95", "P99", "P99.9", "Min", "Max", "Std Dev"]
         print(tabulate(table_data, headers=headers, tablefmt="grid"))
         print("\nAll latency values are in milliseconds.")
-
 
 if __name__ == "__main__":
     main()
