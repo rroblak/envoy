@@ -22,6 +22,7 @@ envoy_cc_library(
     visibility = [
         "//contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/test:__pkg__",
         "//contrib/envoy/extensions/filters/http/peak_ewma/v3alpha/source:__pkg__",
+        "//contrib/envoy/extensions/filters/http/peak_ewma/v3alpha/test:__pkg__",
         "//test/extensions/load_balancing_policies/peak_ewma:__pkg__",
     ],
     deps = [
