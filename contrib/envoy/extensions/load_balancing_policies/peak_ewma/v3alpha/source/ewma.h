@@ -11,33 +11,44 @@ namespace Extensions {
 namespace LoadBalancingPolicies {
 namespace PeakEwma {
 
-namespace {
 /**
- * Optimized fast exp() approximation for load balancing use cases.
- * Uses Horner's method for better numerical stability and performance.
- * ~8x faster than std::exp() with sufficient accuracy for decay calculations.
+ * Fast approximation of exp(x) for load balancing decay calculations.
+ * Trades accuracy for performance (~8x faster than std::exp).
+ * Designed for the range [-10, 0] which covers typical decay scenarios.
  * 
- * Optimized for the range [-10, 0] which covers typical decay scenarios.
+ * @param x Input value, typically negative for decay calculations
+ * @return Approximation of exp(x)
  */
 inline double fastExp(double x) {
   // Clamp to reasonable range for decay calculations
   if (x >= 0.0) return 1.0;
   if (x <= -10.0) return 0.0;
   
-  // Use Horner's method for better numerical stability and performance
+  // For range (-1, 0], use Taylor series
   if (x > -1.0) {
-    // Taylor series: exp(x) ≈ 1 + x + x²/2 + x³/6 + x⁴/24
-    return 1.0 + x * (1.0 + x * (0.5 + x * (0.16666667 + x * 0.04166667)));
+    // Taylor series: exp(x) ≈ 1 + x + x²/2 + x³/6 + x⁴/24 + x⁵/120
+    return 1.0 + x * (1.0 + x * (0.5 + x * (0.16666667 + x * (0.04166667 + x * 0.00833333))));
   }
   
-  // For range [-5, -1], use optimized polynomial with better accuracy
-  if (x > -5.0) {
-    const double y = x + 2.0;
-    return 0.13533528 * (1.0 + y * (1.0 + y * (0.5 + y * 0.16666667)));
+  // For range [-3, -1], use shifted Taylor series around x=-2
+  if (x > -3.0) {
+    const double t = x + 2.0;  // Shift to center around -2
+    const double exp_neg2 = 0.13533528323661270;  // exp(-2)
+    return exp_neg2 * (1.0 + t * (1.0 + t * (0.5 + t * (0.16666667 + t * 0.04166667))));
   }
   
-  // For very negative values, use simple exponential decay
-  return 0.00673795 * (1.0 + (x + 5.0) * 0.2);
+  // For range [-6, -3], use shifted Taylor series around x=-4.5
+  if (x > -6.0) {
+    const double t = x + 4.5;  // Shift to center around -4.5
+    const double exp_neg4_5 = 0.01111089965382423;  // exp(-4.5)
+    return exp_neg4_5 * (1.0 + t * (1.0 + t * (0.5 + t * 0.16666667)));
+  }
+  
+  // For range [-10, -6], use linear interpolation
+  const double t = (x + 10.0) / 4.0;  // Normalize to [0, 1]
+  const double exp_neg6 = 0.002478752176666358;   // exp(-6)
+  const double exp_neg10 = 0.000045399929762484854; // exp(-10)
+  return exp_neg10 + t * (exp_neg6 - exp_neg10);
 }
 
 /**
@@ -58,7 +69,6 @@ public:
     return 1.0 - fastExp(ratio);
   }
 };
-} // namespace
 
 /**
  * Time-based EWMA calculator following Finagle's Peak EWMA implementation.
