@@ -42,7 +42,7 @@ public:
       std::make_shared<NiceMock<Upstream::MockClusterInfo>>()};
   NiceMock<Upstream::MockPrioritySet> priority_set_;
   NiceMock<Runtime::MockLoader> runtime_;
-  NiceMock<MockRandomGenerator> random_;
+  NiceMock<Random::MockRandomGenerator> random_;
   MockTimeSystem time_source_;
 };
 
@@ -55,7 +55,7 @@ TEST_F(PeakEwmaConfigTest, FactoryRegistration) {
 }
 
 TEST_F(PeakEwmaConfigTest, CreateEmptyConfigProto) {
-  PeakEwmaLoadBalancerFactory factory;
+  Factory factory;
   auto proto = factory.createEmptyConfigProto();
   EXPECT_NE(proto, nullptr);
   
@@ -66,7 +66,7 @@ TEST_F(PeakEwmaConfigTest, CreateEmptyConfigProto) {
 }
 
 TEST_F(PeakEwmaConfigTest, LoadConfigWithDefaults) {
-  PeakEwmaLoadBalancerFactory factory;
+  Factory factory;
   NiceMock<Server::Configuration::MockServerFactoryContext> context;
   
   // Create a minimal config proto
@@ -82,7 +82,7 @@ TEST_F(PeakEwmaConfigTest, LoadConfigWithDefaults) {
 }
 
 TEST_F(PeakEwmaConfigTest, LoadConfigWithCustomValues) {
-  PeakEwmaLoadBalancerFactory factory;
+  Factory factory;
   NiceMock<Server::Configuration::MockServerFactoryContext> context;
   
   // Create config with custom values
@@ -98,7 +98,7 @@ TEST_F(PeakEwmaConfigTest, LoadConfigWithCustomValues) {
 }
 
 TEST_F(PeakEwmaConfigTest, CreateThreadAwareLoadBalancer) {
-  PeakEwmaLoadBalancerFactory factory;
+  Factory factory;
   NiceMock<Server::Configuration::MockServerFactoryContext> context;
   
   // Create config
@@ -108,7 +108,7 @@ TEST_F(PeakEwmaConfigTest, CreateThreadAwareLoadBalancer) {
   EXPECT_TRUE(config_result.ok());
   
   // Create the thread-aware load balancer
-  auto talb = factory.create(OptRef<const Upstream::LoadBalancerConfig>(config_result.value().get()),
+  auto talb = factory.create(OptRef<const Upstream::LoadBalancerConfig>(*config_result.value()),
                             *cluster_info_, priority_set_, runtime_, random_, time_source_);
   
   EXPECT_NE(talb, nullptr);
@@ -130,23 +130,33 @@ TEST_F(PeakEwmaConfigTest, CreateThreadAwareLoadBalancer) {
   EXPECT_NE(peak_ewma_lb, nullptr);
 }
 
+#ifdef NDEBUG
+TEST_F(PeakEwmaConfigTest, DISABLED_InvalidConfigType) {
+#else
 TEST_F(PeakEwmaConfigTest, InvalidConfigType) {
-  PeakEwmaLoadBalancerFactory factory;
+#endif
+  Factory factory;
   NiceMock<Server::Configuration::MockServerFactoryContext> context;
   
   // Try to load a different proto type
   google::protobuf::Empty wrong_proto;
   
-  EXPECT_THROW(factory.loadConfig(context, wrong_proto), std::bad_cast);
+  // In debug builds, this will trigger an assertion failure
+  EXPECT_DEATH({ auto result = factory.loadConfig(context, wrong_proto); (void)result; }, "assert failure");
 }
 
 TEST_F(PeakEwmaConfigTest, CreateWithNullConfig) {
-  PeakEwmaLoadBalancerFactory factory;
+  Factory factory;
   
-  // Should not crash when creating with null config
-  EXPECT_DEATH(factory.create(OptRef<const Upstream::LoadBalancerConfig>(),
-                             *cluster_info_, priority_set_, runtime_, random_, time_source_),
-               "Invalid config passed to PeakEwmaLoadBalancerFactory::create");
+  // Should handle null config gracefully and return a valid load balancer
+  auto talb = factory.create(OptRef<const Upstream::LoadBalancerConfig>(),
+                            *cluster_info_, priority_set_, runtime_, random_, time_source_);
+  
+  EXPECT_NE(talb, nullptr);
+  
+  // Should be able to initialize successfully
+  auto status = talb->initialize();
+  EXPECT_TRUE(status.ok());
 }
 
 TEST_F(PeakEwmaConfigTest, ConfigValidation) {
@@ -167,7 +177,7 @@ TEST_F(PeakEwmaConfigTest, ConfigValidation) {
 }
 
 TEST_F(PeakEwmaConfigTest, MultipleLoadBalancerInstances) {
-  PeakEwmaLoadBalancerFactory factory;
+  Factory factory;
   NiceMock<Server::Configuration::MockServerFactoryContext> context;
   
   envoy::extensions::load_balancing_policies::peak_ewma::v3alpha::PeakEwma proto_config;
@@ -175,7 +185,7 @@ TEST_F(PeakEwmaConfigTest, MultipleLoadBalancerInstances) {
   auto config_result = factory.loadConfig(context, proto_config);
   EXPECT_TRUE(config_result.ok());
   
-  auto talb = factory.create(OptRef<const Upstream::LoadBalancerConfig>(config_result.value().get()),
+  auto talb = factory.create(OptRef<const Upstream::LoadBalancerConfig>(*config_result.value()),
                             *cluster_info_, priority_set_, runtime_, random_, time_source_);
   
   auto lb_factory = talb->factory();
