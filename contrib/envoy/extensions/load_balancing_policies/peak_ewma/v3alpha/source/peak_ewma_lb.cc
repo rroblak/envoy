@@ -133,48 +133,6 @@ double PeakEwmaLoadBalancer::calculateHostCostBranchless(double rtt_ewma, double
   }
 }
 
-void PeakEwmaLoadBalancer::prefetchHostDataBatch(
-    const Upstream::HostVector& hosts, size_t start_index) const {
-  const size_t host_count = hosts.size();
-  const size_t prefetch_end = std::min(start_index + kLoopUnrollFactor, host_count);
-  
-  for (size_t i = start_index; i < prefetch_end; ++i) {
-    __builtin_prefetch(hosts[i].get(), kPrefetchReadHint, kPrefetchHighLocality);
-  }
-}
-
-std::vector<PeakEwmaLoadBalancer::HostCostPair>
-PeakEwmaLoadBalancer::calculateBatchCosts(const Upstream::HostVector& hosts) {
-  std::vector<HostCostPair> results;
-  results.reserve(hosts.size());
-  
-  const size_t host_count = hosts.size();
-  const size_t unrolled_end = host_count & ~(kLoopUnrollFactor - 1);
-  
-  for (size_t i = 0; i < unrolled_end; i += kLoopUnrollFactor) {
-    if (i + (kLoopUnrollFactor * 2) < host_count) {
-      prefetchHostDataBatch(hosts, i + kLoopUnrollFactor);
-    }
-    
-    for (size_t j = 0; j < kLoopUnrollFactor; ++j) {
-      const size_t host_index = i + j;
-      const auto& host = hosts[host_index];
-      
-      HostStatIterator iterator;
-      const double cost = calculateHostCost(host, iterator);
-      results.emplace_back(host, cost);
-    }
-  }
-  
-  for (size_t i = unrolled_end; i < host_count; ++i) {
-    const auto& host = hosts[i];
-    HostStatIterator iterator;
-    const double cost = calculateHostCost(host, iterator);
-    results.emplace_back(host, cost);
-  }
-  
-  return results;
-}
 
 
 Upstream::HostConstSharedPtr PeakEwmaLoadBalancer::selectFromTwoCandidates(

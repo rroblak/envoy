@@ -19,7 +19,6 @@ namespace PeakEwma {
 constexpr int64_t kDefaultDecayTimeSeconds = 10;
 constexpr double kPenaltyValue = static_cast<double>(std::numeric_limits<int64_t>::max() >> 16);  // Finagle-compatible penalty
 constexpr size_t kCacheLineAlignment = 64;
-constexpr size_t kLoopUnrollFactor = 4;
 constexpr int kPrefetchReadHint = 0;
 constexpr int kPrefetchHighLocality = 3;
 constexpr uint64_t kTieBreakingMask = 0x8000000000000000ULL;
@@ -71,8 +70,6 @@ private:
   double calculateHostCost(Upstream::HostConstSharedPtr host, HostStatIterator& iterator);
   double calculateHostCostBranchless(double rtt_ewma, double active_requests) const;
   HostStatIterator findHostStats(Upstream::HostConstSharedPtr host);
-  std::vector<HostCostPair> calculateBatchCosts(const Upstream::HostVector& hosts);
-  void prefetchHostDataBatch(const Upstream::HostVector& hosts, size_t start_index) const;
   
   void onHostSetUpdate(const Upstream::HostVector& hosts_added,
                        const Upstream::HostVector& hosts_removed);
