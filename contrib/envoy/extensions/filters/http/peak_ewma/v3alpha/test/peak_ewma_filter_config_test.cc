@@ -27,8 +27,8 @@ TEST(PeakEwmaFilterConfigTest, CreateFilterFactory) {
   envoy::extensions::filters::http::peak_ewma::v3alpha::PeakEwmaConfig proto_config;
   
   // Create the filter factory
-  auto filter_factory = factory.createFilterFactoryFromProtoTyped(
-      proto_config, "test_prefix", context);
+  auto filter_factory = factory.createFilterFactoryFromProto(
+      proto_config, "test_prefix", context).value();
   
   EXPECT_NE(filter_factory, nullptr);
   
@@ -57,9 +57,10 @@ TEST(PeakEwmaFilterConfigTest, FactoryName) {
 
 TEST(PeakEwmaFilterConfigTest, ConfigTypeUrl) {
   PeakEwmaFilterConfigFactory factory;
-  EXPECT_EQ(factory.configTypes().size(), 1);
-  EXPECT_EQ(factory.configTypes()[0], 
-           "type.googleapis.com/envoy.extensions.filters.http.peak_ewma.v3alpha.PeakEwmaConfig");
+  auto config_types = factory.configTypes();
+  EXPECT_EQ(config_types.size(), 1);
+  EXPECT_NE(config_types.find("envoy.extensions.filters.http.peak_ewma.v3alpha.PeakEwmaConfig"), 
+           config_types.end());
 }
 
 TEST(PeakEwmaFilterConfigTest, CreateRouteSpecificFilterConfig) {
@@ -72,7 +73,8 @@ TEST(PeakEwmaFilterConfigTest, CreateRouteSpecificFilterConfig) {
       proto_config, context, ProtobufMessage::getNullValidationVisitor());
   
   // Peak EWMA filter doesn't use route-specific config
-  EXPECT_EQ(route_config, nullptr);
+  EXPECT_TRUE(route_config.ok());
+  EXPECT_EQ(route_config.value(), nullptr);
 }
 
 } // namespace

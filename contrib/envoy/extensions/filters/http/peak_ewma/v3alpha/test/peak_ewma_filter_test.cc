@@ -1,6 +1,7 @@
 #include "contrib/envoy/extensions/filters/http/peak_ewma/v3alpha/source/peak_ewma_filter.h"
 #include "contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/source/peak_ewma_lb.h"
 
+#include "test/mocks/common.h"
 #include "test/mocks/http/mocks.h"
 #include "test/mocks/upstream/host.h"
 #include "test/test_common/utility.h"
@@ -18,6 +19,8 @@ namespace Extensions {
 namespace HttpFilters {
 namespace PeakEwma {
 namespace {
+
+using LoadBalancingPolicies::PeakEwma::kDefaultDecayTimeSeconds;
 
 class PeakEwmaRttFilterTest : public ::testing::Test {
 protected:
@@ -143,6 +146,48 @@ TEST_F(PeakEwmaRttFilterTest, EndStreamFlagsHandling) {
   // Test encode with end_stream = true
   auto encode_result = filter_->encodeHeaders(response_headers, true);
   EXPECT_EQ(encode_result, Http::FilterHeadersStatus::Continue);
+}
+
+TEST_F(PeakEwmaRttFilterTest, EncodeHeadersWithPeakEwmaStats) {
+  // Test the case where upstream host has Peak EWMA stats - this should record RTT
+  Http::TestRequestHeaderMapImpl request_headers;
+  Http::TestResponseHeaderMapImpl response_headers;
+  
+  auto mock_host = std::make_shared<NiceMock<Upstream::MockHost>>();
+  auto mock_upstream_info = std::make_shared<NiceMock<StreamInfo::MockUpstreamInfo>>();
+  
+  // Set up mock host with a proper address
+  auto address = Network::Utility::parseInternetAddressAndPortNoThrow("127.0.0.1:8080");
+  ON_CALL(*mock_host, address()).WillByDefault(Return(address));
+  
+  // Use TestUtil::TestScope for stats scope
+  Stats::TestUtil::TestStore store;
+  auto scope = store.rootScope();
+  
+  // Use MockTimeSystem for time source
+  MockTimeSystem time_system;
+  
+  // Create Peak EWMA stats with required constructor parameters
+  auto stats = std::make_unique<LoadBalancingPolicies::PeakEwma::PeakEwmaHostStats>(
+      kDefaultDecayTimeSeconds * 1000000000LL, // tau_nanos
+      *scope,
+      *mock_host,
+      time_system);
+  
+  // Set the LB policy data on the mock host
+  mock_host->setLbPolicyData(std::move(stats));
+  
+  // Start the request
+  filter_->decodeHeaders(request_headers, false);
+  
+  // Set up stream info with upstream host that has Peak EWMA stats
+  ON_CALL(*mock_upstream_info, upstreamHost()).WillByDefault(Return(mock_host));
+  ON_CALL(encoder_callbacks_.stream_info_, upstreamInfo())
+      .WillByDefault(Return(mock_upstream_info));
+  
+  // Complete the response - this should call stats.recordRttSample()
+  auto result = filter_->encodeHeaders(response_headers, false);
+  EXPECT_EQ(result, Http::FilterHeadersStatus::Continue);
 }
 
 } // namespace
