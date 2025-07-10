@@ -161,8 +161,8 @@ public:
 private:
   const int64_t tau_nanos_;           // Time constant in nanoseconds
   double ewma_value_;                 // Current EWMA value
-  int64_t last_timestamp_nanos_;      // Last observed timestamp
   int64_t last_update_timestamp_ = 0; // Timestamp of last EWMA update
+  int64_t last_timestamp_nanos_;      // Last observed timestamp
 };
 
 

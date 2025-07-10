@@ -17,9 +17,8 @@ namespace Extensions {
 namespace LoadBalancingPolicies {
 namespace PeakEwma {
 
-PeakEwmaHostStats::PeakEwmaHostStats(int64_t tau_nanos,
-                                     Stats::Scope& scope, const Upstream::Host& host,
-                                     TimeSource& time_source)
+PeakEwmaHostStats::PeakEwmaHostStats(const Upstream::Host& host, int64_t tau_nanos,
+                                     Stats::Scope& scope, TimeSource& time_source)
     : rtt_ewma_(tau_nanos, 0.0),
       time_source_(time_source),
       cost_stat_(scope.gaugeFromString(
@@ -71,13 +70,13 @@ void PeakEwmaLoadBalancer::onHostSetUpdate(
     const Upstream::HostVector& hosts_added,
     const Upstream::HostVector& hosts_removed) {
   for (const auto& host : hosts_added) {
-    auto stats = std::make_unique<PeakEwmaHostStats>(tau_nanos_,
-                                                     cluster_info_.statsScope(), *host, time_source_);
+    auto stats = std::make_unique<PeakEwmaHostStats>(*host, tau_nanos_,
+                                                     cluster_info_.statsScope(), time_source_);
     host->setLbPolicyData(std::move(stats));
     
     // Maintain internal map for fallback compatibility
-    host_stats_map_.try_emplace(host, tau_nanos_,
-                                cluster_info_.statsScope(), *host, time_source_);
+    host_stats_map_.try_emplace(host, *host, tau_nanos_,
+                                cluster_info_.statsScope(), time_source_);
   }
   for (const auto& host : hosts_removed) {
     host_stats_map_.erase(host);
