@@ -166,12 +166,18 @@ TEST_F(PeakEwmaRttFilterTest, EncodeHeadersWithPeakEwmaStats) {
   
   // Use MockTimeSystem for time source
   MockTimeSystem time_system;
+  // Set up time source mock to return consistent time values
+  std::chrono::nanoseconds current_time = std::chrono::nanoseconds(1000000000);
+  EXPECT_CALL(time_system, monotonicTime()).WillRepeatedly(testing::Invoke([&current_time]() {
+    current_time += std::chrono::microseconds(100);
+    return MonotonicTime(current_time);
+  }));
   
   // Create Peak EWMA stats with required constructor parameters
-  auto stats = std::make_unique<LoadBalancingPolicies::PeakEwma::PeakEwmaHostStats>(
+  auto stats = std::make_unique<LoadBalancingPolicies::PeakEwma::GlobalHostStats>(
+      *mock_host,
       kDefaultDecayTimeSeconds * 1000000000LL, // tau_nanos
       *scope,
-      *mock_host,
       time_system);
   
   // Set the LB policy data on the mock host

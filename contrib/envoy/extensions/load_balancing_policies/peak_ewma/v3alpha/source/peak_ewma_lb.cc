@@ -17,28 +17,54 @@ namespace Extensions {
 namespace LoadBalancingPolicies {
 namespace PeakEwma {
 
-PeakEwmaHostStats::PeakEwmaHostStats(const Upstream::Host& host, int64_t tau_nanos,
-                                     Stats::Scope& scope, TimeSource& time_source)
-    : rtt_ewma_(tau_nanos, 0.0),
+GlobalHostStats::GlobalHostStats(const Upstream::Host& host, int64_t tau_nanos,
+                                 Stats::Scope& scope, TimeSource& time_source)
+    : decay_constant_(static_cast<double>(tau_nanos)),
+      default_rtt_ns_(10 * 1000000), // 10ms default RTT in nanoseconds
       time_source_(time_source),
       cost_stat_(scope.gaugeFromString(
           "peak_ewma." + host.address()->asString() + ".cost",
-          Stats::Gauge::ImportMode::NeverImport)) {}
+          Stats::Gauge::ImportMode::NeverImport)) {
+  // Initialize EWMA data with default values
+  uint64_t current_time_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      time_source_.monotonicTime().time_since_epoch()).count();
+  double initial_ewma = static_cast<double>(default_rtt_ns_) / 1000000.0; // Convert to milliseconds
+  current_ewma_data_.store(new EwmaTimestampData(initial_ewma, current_time_ns));
+}
 
-double PeakEwmaHostStats::getEwmaRttMs() const {
+GlobalHostStats::~GlobalHostStats() {
+  // Clean up the atomic pointer
+  delete current_ewma_data_.load();
+}
+
+double GlobalHostStats::getEwmaRttMs() const {
   int64_t current_nanos = std::chrono::duration_cast<std::chrono::nanoseconds>(
       time_source_.monotonicTime().time_since_epoch()).count();
-  return const_cast<PeakEwmaCalculator&>(rtt_ewma_).value(current_nanos);
+  return getEwmaRttMs(current_nanos);
 }
 
-double PeakEwmaHostStats::getEwmaRttMs(int64_t cached_time_nanos) const {
-  return const_cast<PeakEwmaCalculator&>(rtt_ewma_).value(cached_time_nanos);
+double GlobalHostStats::getEwmaRttMs(int64_t cached_time_nanos) const {
+  // Lock-free read of consistent EWMA data
+  const EwmaTimestampData* data = current_ewma_data_.load();
+  
+  // Apply time-based decay to the EWMA value
+  if (static_cast<uint64_t>(cached_time_nanos) > data->timestamp_ns) {
+    int64_t time_delta_ns = cached_time_nanos - static_cast<int64_t>(data->timestamp_ns);
+    double alpha = FastAlphaCalculator::timeGapToAlpha(time_delta_ns, decay_constant_);
+    // Decay toward default RTT
+    double default_rtt_ms = static_cast<double>(default_rtt_ns_) / 1000000.0;
+    return data->ewma + alpha * (default_rtt_ms - data->ewma);
+  }
+  
+  return data->ewma;
 }
 
-void PeakEwmaHostStats::recordRttSample(std::chrono::milliseconds rtt) {
-  int64_t timestamp_nanos = std::chrono::duration_cast<std::chrono::nanoseconds>(
-      time_source_.monotonicTime().time_since_epoch()).count();
-  rtt_ewma_.insert(static_cast<double>(rtt.count()), timestamp_nanos);
+void GlobalHostStats::updateGlobalEwma(double new_ewma, uint64_t timestamp_ns) {
+  // This method is called by the main thread during aggregation
+  // Atomic swap of new EWMA data - lock-free for readers
+  const EwmaTimestampData* new_data = new EwmaTimestampData(new_ewma, timestamp_ns);
+  const EwmaTimestampData* old_data = current_ewma_data_.exchange(new_data);
+  delete old_data;
 }
 
 PeakEwmaLoadBalancer::PeakEwmaLoadBalancer(
@@ -70,13 +96,13 @@ void PeakEwmaLoadBalancer::onHostSetUpdate(
     const Upstream::HostVector& hosts_added,
     const Upstream::HostVector& hosts_removed) {
   for (const auto& host : hosts_added) {
-    auto stats = std::make_unique<PeakEwmaHostStats>(*host, tau_nanos_,
-                                                     cluster_info_.statsScope(), time_source_);
+    auto stats = std::make_unique<GlobalHostStats>(*host, tau_nanos_,
+                                                   cluster_info_.statsScope(), time_source_);
     host->setLbPolicyData(std::move(stats));
     
     // Maintain internal map for fallback compatibility
-    host_stats_map_.try_emplace(host, *host, tau_nanos_,
-                                cluster_info_.statsScope(), time_source_);
+    host_stats_map_.try_emplace(host, std::make_unique<GlobalHostStats>(*host, tau_nanos_,
+                                cluster_info_.statsScope(), time_source_));
   }
   for (const auto& host : hosts_removed) {
     host_stats_map_.erase(host);
@@ -90,8 +116,8 @@ PeakEwmaLoadBalancer::findHostStats(Upstream::HostConstSharedPtr host) {
 
 double PeakEwmaLoadBalancer::calculateHostCost(
     Upstream::HostConstSharedPtr host, HostStatIterator& iterator) {
-  auto peak_ewma_stats_opt = host->typedLbPolicyData<PeakEwmaHostStats>();
-  PeakEwmaHostStats* host_stats = nullptr;
+  auto peak_ewma_stats_opt = host->typedLbPolicyData<GlobalHostStats>();
+  GlobalHostStats* host_stats = nullptr;
   
   if (peak_ewma_stats_opt.has_value()) {
     host_stats = &peak_ewma_stats_opt.ref();
@@ -100,13 +126,14 @@ double PeakEwmaLoadBalancer::calculateHostCost(
     if (ABSL_PREDICT_FALSE(iterator == host_stats_map_.end())) {
       return std::numeric_limits<double>::max();
     }
-    host_stats = &iterator->second;
+    host_stats = iterator->second.get();
   }
 
   // Use cached time to reduce syscall overhead
   const int64_t cached_time = getCachedTimeNanos();
   const double rtt_ewma = host_stats->getEwmaRttMs(cached_time);
-  const double active_requests = static_cast<double>(host->stats().rq_active_.value());
+  // Use pending requests from GlobalHostStats instead of host stats
+  const double active_requests = static_cast<double>(host_stats->getPendingRequests());
   
   const double cost = calculateHostCostBranchless(rtt_ewma, active_requests);
   host_stats->setComputedCostStat(cost);

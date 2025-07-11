@@ -4,8 +4,8 @@ package envoy.extensions.load_balancing_policies.peak_ewma.v3alpha;
 
 import "google/protobuf/duration.proto";
 import "xds/annotations/v3/status.proto";
-import "validate/validate.proto";
 
+option go_package = "github.com/envoyproxy/go-control-plane/contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha;v3alpha";
 option (xds.annotations.v3.file_status).work_in_progress = true;
 
 // [#protodoc-title: Peak EWMA Load Balancer Configuration]
@@ -50,8 +50,22 @@ message PeakEwma {
   // - 60s: Very stable, suitable for long-lived connections
   //
   // If not specified, defaults to 10 seconds (following Finagle's default).
-  google.protobuf.Duration decay_time = 1 [(validate.rules).duration = {
-    gt {nanos: 0}
-  }];
+  google.protobuf.Duration decay_time = 1;
+
+  // The interval at which EWMA data is aggregated from worker threads to the main thread.
+  // This controls the frequency of cross-thread synchronization for the per-thread aggregation model.
+  //
+  // A shorter interval provides more up-to-date cross-worker information but increases
+  // synchronization overhead. A longer interval reduces overhead but may cause workers
+  // to operate with staler information about other workers' latency observations.
+  //
+  // Typical values:
+  // - 50ms: High frequency updates, good for rapidly changing environments
+  // - 100ms: Balanced performance and freshness (default)
+  // - 200ms: Lower overhead, suitable for stable environments
+  // - 500ms: Minimal overhead, acceptable for most production workloads
+  //
+  // If not specified, defaults to 100 milliseconds.
+  google.protobuf.Duration aggregation_interval = 2;
 
 }

@@ -8,8 +8,12 @@
 #include "absl/container/flat_hash_map.h"
 #include "contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/peak_ewma.pb.h"
 
+#include <atomic>
+#include <cstring>
 #include <limits>
+#include <memory>
 #include <vector>
+#include <new>
 
 namespace Envoy {
 namespace Extensions {
@@ -29,19 +33,60 @@ class PeakEwmaTestPeer;
 
 class PeakEwmaLoadBalancerFactory;
 
-class alignas(kCacheLineAlignment) PeakEwmaHostStats : public Upstream::HostLbPolicyData {
-public:
-  PeakEwmaHostStats(const Upstream::Host& host, int64_t tau_nanos,
-                    Stats::Scope& scope, TimeSource& time_source);
+// EWMA and timestamp data for atomic shared_ptr access
+struct EwmaTimestampData {
+  double ewma;
+  uint64_t timestamp_ns;
+  
+  EwmaTimestampData(double ewma_val, uint64_t timestamp) 
+    : ewma(ewma_val), timestamp_ns(timestamp) {}
+};
 
+// Global host statistics shared across all worker threads
+struct alignas(kCacheLineAlignment) GlobalHostStats : public Upstream::HostLbPolicyData {
+public:
+  GlobalHostStats(const Upstream::Host& host, int64_t tau_nanos, 
+                  Stats::Scope& scope, TimeSource& time_source);
+  
+  ~GlobalHostStats();
+  
+  // Non-copyable due to atomic members
+  GlobalHostStats(const GlobalHostStats&) = delete;
+  GlobalHostStats& operator=(const GlobalHostStats&) = delete;
+
+  // Get current EWMA value (for load balancing decisions)
   double getEwmaRttMs() const;
   double getEwmaRttMs(int64_t cached_time_nanos) const;
-  void recordRttSample(std::chrono::milliseconds rtt);
+  
+  // Get current pending request count
+  int64_t getPendingRequests() const { 
+    return pending_requests.load(std::memory_order_relaxed); 
+  }
+  
+  // Increment/decrement pending requests (called on request start/end)
+  void incrementPendingRequests() { 
+    pending_requests.fetch_add(1, std::memory_order_relaxed); 
+  }
+  void decrementPendingRequests() { 
+    pending_requests.fetch_sub(1, std::memory_order_relaxed); 
+  }
+
+  // Update global EWMA from aggregated worker data (called by main thread)
+  void updateGlobalEwma(double new_ewma, uint64_t timestamp_ns);
+  
+  // For observability
   void setComputedCostStat(double cost) { cost_stat_.set(static_cast<uint64_t>(cost)); }
 
-  PeakEwmaCalculator rtt_ewma_;
+  // EWMA data with lock-free reads via atomic pointer
+  std::atomic<const EwmaTimestampData*> current_ewma_data_;
+  
+  // Real-time count of in-flight requests across all threads
+  std::atomic<int64_t> pending_requests{0};
 
 private:
+  // Configuration (immutable after creation)
+  const double decay_constant_;
+  const uint64_t default_rtt_ns_;
   TimeSource& time_source_;
   Stats::Gauge& cost_stat_;
 };
@@ -61,7 +106,7 @@ public:
 private:
   friend class PeakEwmaTestPeer;
 
-  using HostStatsMap = absl::flat_hash_map<Upstream::HostConstSharedPtr, PeakEwmaHostStats>;
+  using HostStatsMap = absl::flat_hash_map<Upstream::HostConstSharedPtr, std::unique_ptr<GlobalHostStats>>;
   using HostCostPair = std::pair<Upstream::HostConstSharedPtr, double>;
   using HostStatIterator = HostStatsMap::iterator;
 
