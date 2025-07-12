@@ -1,6 +1,8 @@
 #pragma once
 
 #include "envoy/upstream/load_balancer.h"
+#include "envoy/thread_local/thread_local.h"
+#include "envoy/thread_local/thread_local_object.h"
 
 #include "source/extensions/load_balancing_policies/common/load_balancer_impl.h"
 #include "contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/source/ewma.h"
@@ -14,6 +16,8 @@
 #include <memory>
 #include <vector>
 #include <new>
+#include <deque>
+#include <mutex>
 
 namespace Envoy {
 namespace Extensions {
@@ -74,6 +78,9 @@ public:
   // Update global EWMA from aggregated worker data (called by main thread)
   void updateGlobalEwma(double new_ewma, uint64_t timestamp_ns);
   
+  // Record RTT sample directly (thread-safe, for compatibility during transition)
+  void recordRttSample(std::chrono::milliseconds rtt);
+  
   // For observability
   void setComputedCostStat(double cost) { cost_stat_.set(static_cast<uint64_t>(cost)); }
 
@@ -89,6 +96,56 @@ private:
   const uint64_t default_rtt_ns_;
   TimeSource& time_source_;
   Stats::Gauge& cost_stat_;
+  
+  // Temporary: Direct EWMA calculator for RTT recording (will be replaced by aggregation in Phase 4)
+  mutable std::mutex rtt_mutex_;
+  mutable PeakEwmaCalculator direct_ewma_;
+};
+
+// Per-thread host statistics for worker thread data collection
+struct PerThreadHostStats : public ThreadLocal::ThreadLocalObject {
+public:
+  PerThreadHostStats(Upstream::HostConstSharedPtr host, int64_t tau_nanos);
+  
+  // Record RTT sample in this worker thread
+  void recordRttSample(std::chrono::milliseconds rtt, uint64_t timestamp_ns);
+  
+  // Get current thread-local EWMA value
+  double getCurrentEwma(uint64_t timestamp_ns) const { 
+    return const_cast<PeakEwmaCalculator&>(local_ewma_).value(timestamp_ns); 
+  }
+  
+  // Get pending requests for this thread
+  int64_t getLocalPendingRequests() const { return local_pending_requests_; }
+  
+  // Increment/decrement local pending requests
+  void incrementLocalPendingRequests() { ++local_pending_requests_; }
+  void decrementLocalPendingRequests() { --local_pending_requests_; }
+  
+  // Get host reference for aggregation
+  Upstream::HostConstSharedPtr getHost() const { return host_; }
+  
+  // Get timestamp of last update for aggregation staleness detection
+  uint64_t getLastUpdateTimestamp() const { return last_update_timestamp_; }
+
+private:
+  Upstream::HostConstSharedPtr host_;
+  PeakEwmaCalculator local_ewma_;
+  int64_t local_pending_requests_{0};
+  uint64_t last_update_timestamp_{0};
+};
+
+// Thread-local storage container for all hosts' per-thread statistics
+struct PerThreadData : public ThreadLocal::ThreadLocalObject {
+public:
+  // Map from host to its per-thread statistics
+  absl::flat_hash_map<Upstream::HostConstSharedPtr, std::unique_ptr<PerThreadHostStats>> host_stats_;
+  
+  // Get or create per-thread stats for a host
+  PerThreadHostStats& getOrCreateHostStats(Upstream::HostConstSharedPtr host, int64_t tau_nanos);
+  
+  // Remove host stats when host is removed
+  void removeHostStats(Upstream::HostConstSharedPtr host);
 };
 
 class PeakEwmaLoadBalancer : public Upstream::ZoneAwareLoadBalancerBase {
@@ -98,7 +155,8 @@ public:
       Upstream::ClusterLbStats& stats, Runtime::Loader& runtime, Random::RandomGenerator& random,
       uint32_t healthy_panic_threshold, const Upstream::ClusterInfo& cluster_info,
       TimeSource& time_source,
-      const envoy::extensions::load_balancing_policies::peak_ewma::v3alpha::PeakEwma& config);
+      const envoy::extensions::load_balancing_policies::peak_ewma::v3alpha::PeakEwma& config,
+      ThreadLocal::SlotAllocator& tls_allocator);
 
   Upstream::HostConstSharedPtr chooseHostOnce(Upstream::LoadBalancerContext* context) override;
   Upstream::HostConstSharedPtr peekAnotherHost(Upstream::LoadBalancerContext* context) override;
@@ -123,12 +181,21 @@ private:
   void prefetchHostData(const Upstream::HostVector& hosts,
                         size_t primary_idx, size_t secondary_idx) const;
 
+  // Thread-local storage access methods
+  PerThreadData& getThreadLocalData();
+  PerThreadHostStats& getOrCreateThreadLocalHostStats(Upstream::HostConstSharedPtr host);
+  void removeThreadLocalHostStats(Upstream::HostConstSharedPtr host);
+
   const Upstream::ClusterInfo& cluster_info_;
   TimeSource& time_source_;
   const envoy::extensions::load_balancing_policies::peak_ewma::v3alpha::PeakEwma config_proto_;
   const int64_t tau_nanos_;
   Common::CallbackHandlePtr member_update_cb_handle_;
   HostStatsMap host_stats_map_;
+  
+  // Thread-local storage for per-worker statistics (lazy initialized)
+  mutable std::unique_ptr<ThreadLocal::TypedSlot<PerThreadData>> tls_slot_;
+  ThreadLocal::SlotAllocator& tls_allocator_;
   
   // Time caching optimization - reduce syscall overhead
   mutable int64_t cached_time_nanos_ = 0;

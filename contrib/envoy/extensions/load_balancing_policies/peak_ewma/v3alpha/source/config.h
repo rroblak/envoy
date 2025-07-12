@@ -1,6 +1,7 @@
 #pragma once
 
 #include "envoy/upstream/load_balancer.h"
+#include "envoy/thread_local/thread_local.h"
 
 #include "source/common/common/logger.h"
 #include "source/extensions/load_balancing_policies/common/factory_base.h"
@@ -18,9 +19,11 @@ using PeakEwmaLbProto = envoy::extensions::load_balancing_policies::peak_ewma::v
 
 class PeakEwmaLbConfig : public Upstream::LoadBalancerConfig {
 public:
-  PeakEwmaLbConfig(const PeakEwmaLbProto& proto_config) : proto_config_(proto_config) {}
+  PeakEwmaLbConfig(const PeakEwmaLbProto& proto_config, ThreadLocal::SlotAllocator& tls_allocator) 
+    : proto_config_(proto_config), tls_slot_allocator_(tls_allocator) {}
 
   const PeakEwmaLbProto proto_config_;
+  ThreadLocal::SlotAllocator& tls_slot_allocator_;
 };
 
 struct PeakEwmaCreator : public Logger::Loggable<Logger::Id::upstream> {
@@ -37,11 +40,11 @@ public:
   Factory() : FactoryBase("envoy.load_balancing_policies.peak_ewma") {}
 
   absl::StatusOr<Upstream::LoadBalancerConfigPtr>
-  loadConfig(Server::Configuration::ServerFactoryContext&,
+  loadConfig(Server::Configuration::ServerFactoryContext& context,
              const Protobuf::Message& config) override {
     ASSERT(dynamic_cast<const PeakEwmaLbProto*>(&config) != nullptr);
     const PeakEwmaLbProto& typed_config = dynamic_cast<const PeakEwmaLbProto&>(config);
-    return Upstream::LoadBalancerConfigPtr{new PeakEwmaLbConfig(typed_config)};
+    return Upstream::LoadBalancerConfigPtr{new PeakEwmaLbConfig(typed_config, context.threadLocal())};
   }
 };
 

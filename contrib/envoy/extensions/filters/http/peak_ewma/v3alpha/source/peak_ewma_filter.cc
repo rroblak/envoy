@@ -29,10 +29,10 @@ Http::FilterHeadersStatus PeakEwmaRttFilter::decodeHeaders(Http::RequestHeaderMa
 }
 
 Http::FilterHeadersStatus PeakEwmaRttFilter::encodeHeaders(Http::ResponseHeaderMap&, bool) {
-  // TODO: Calculate RTT and record it in Phase 3
-  // const MonotonicTime response_time = encoder_callbacks_->streamInfo().timeSource().monotonicTime();
-  // const std::chrono::milliseconds rtt = 
-  //     std::chrono::duration_cast<std::chrono::milliseconds>(response_time - request_start_time_);
+  // Calculate RTT and record it
+  const MonotonicTime response_time = encoder_callbacks_->streamInfo().timeSource().monotonicTime();
+  const std::chrono::milliseconds rtt = 
+      std::chrono::duration_cast<std::chrono::milliseconds>(response_time - request_start_time_);
 
   // Get upstream host from stream info
   const StreamInfo::StreamInfo& stream_info = encoder_callbacks_->streamInfo();
@@ -46,8 +46,8 @@ Http::FilterHeadersStatus PeakEwmaRttFilter::encodeHeaders(Http::ResponseHeaderM
       // Decrement pending requests when request completes
       stats.decrementPendingRequests();
       
-      // TODO: RTT recording will be handled by per-thread stats in Phase 3
-      // For now, we'll skip RTT recording to avoid breaking the atomic model
+      // Record RTT sample for EWMA calculation
+      stats.recordRttSample(rtt);
     }
   }
 

@@ -4,6 +4,7 @@
 #include <memory>
 
 #include "envoy/upstream/upstream.h"
+#include "envoy/common/optref.h"
 
 #include "source/common/common/assert.h"
 #include "source/common/common/utility.h"
@@ -24,7 +25,8 @@ GlobalHostStats::GlobalHostStats(const Upstream::Host& host, int64_t tau_nanos,
       time_source_(time_source),
       cost_stat_(scope.gaugeFromString(
           "peak_ewma." + host.address()->asString() + ".cost",
-          Stats::Gauge::ImportMode::NeverImport)) {
+          Stats::Gauge::ImportMode::NeverImport)),
+      direct_ewma_(tau_nanos, 0.0) {
   // Initialize EWMA data with default values
   uint64_t current_time_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
       time_source_.monotonicTime().time_since_epoch()).count();
@@ -67,12 +69,57 @@ void GlobalHostStats::updateGlobalEwma(double new_ewma, uint64_t timestamp_ns) {
   delete old_data;
 }
 
+void GlobalHostStats::recordRttSample(std::chrono::milliseconds rtt) {
+  // Temporary implementation: Record RTT directly in GlobalHostStats
+  // This provides immediate EWMA updating for integration tests
+  // Will be replaced by per-thread aggregation in Phase 4
+  std::lock_guard<std::mutex> lock(rtt_mutex_);
+  
+  uint64_t timestamp_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      time_source_.monotonicTime().time_since_epoch()).count();
+  
+  // Update the direct EWMA calculator
+  direct_ewma_.insert(static_cast<double>(rtt.count()), timestamp_ns);
+  
+  // Update the atomic EWMA data for lock-free reads
+  double current_ewma = direct_ewma_.value(timestamp_ns);
+  const EwmaTimestampData* new_data = new EwmaTimestampData(current_ewma, timestamp_ns);
+  const EwmaTimestampData* old_data = current_ewma_data_.exchange(new_data);
+  delete old_data;
+}
+
+// PerThreadHostStats implementation
+PerThreadHostStats::PerThreadHostStats(Upstream::HostConstSharedPtr host, int64_t tau_nanos)
+    : host_(host), local_ewma_(tau_nanos, 0.0) {}
+
+void PerThreadHostStats::recordRttSample(std::chrono::milliseconds rtt, uint64_t timestamp_ns) {
+  local_ewma_.insert(static_cast<double>(rtt.count()), timestamp_ns);
+  last_update_timestamp_ = timestamp_ns;
+}
+
+// PerThreadData implementation
+PerThreadHostStats& PerThreadData::getOrCreateHostStats(Upstream::HostConstSharedPtr host, int64_t tau_nanos) {
+  auto it = host_stats_.find(host);
+  if (it == host_stats_.end()) {
+    auto stats = std::make_unique<PerThreadHostStats>(host, tau_nanos);
+    auto* stats_ptr = stats.get();
+    host_stats_[host] = std::move(stats);
+    return *stats_ptr;
+  }
+  return *it->second;
+}
+
+void PerThreadData::removeHostStats(Upstream::HostConstSharedPtr host) {
+  host_stats_.erase(host);
+}
+
 PeakEwmaLoadBalancer::PeakEwmaLoadBalancer(
     const Upstream::PrioritySet& priority_set, const Upstream::PrioritySet* local_priority_set,
     Upstream::ClusterLbStats& stats, Runtime::Loader& runtime, Random::RandomGenerator& random,
     uint32_t healthy_panic_threshold, const Upstream::ClusterInfo& cluster_info,
     TimeSource& time_source,
-    const envoy::extensions::load_balancing_policies::peak_ewma::v3alpha::PeakEwma& config)
+    const envoy::extensions::load_balancing_policies::peak_ewma::v3alpha::PeakEwma& config,
+    ThreadLocal::SlotAllocator& tls_allocator)
     : ZoneAwareLoadBalancerBase(priority_set, local_priority_set, stats, runtime, random,
                                 healthy_panic_threshold, absl::nullopt),
       cluster_info_(cluster_info),
@@ -80,7 +127,8 @@ PeakEwmaLoadBalancer::PeakEwmaLoadBalancer(
       config_proto_(config),
       tau_nanos_(config_proto_.has_decay_time() ? 
           DurationUtil::durationToMilliseconds(config_proto_.decay_time()) * 1000000LL :
-          kDefaultDecayTimeSeconds * 1000000000LL) {
+          kDefaultDecayTimeSeconds * 1000000000LL),
+      tls_allocator_(tls_allocator) {
   member_update_cb_handle_ = priority_set.addMemberUpdateCb(
       [this](const Upstream::HostVector& hosts_added, const Upstream::HostVector& hosts_removed) -> absl::Status {
         onHostSetUpdate(hosts_added, hosts_removed);
@@ -106,6 +154,14 @@ void PeakEwmaLoadBalancer::onHostSetUpdate(
   }
   for (const auto& host : hosts_removed) {
     host_stats_map_.erase(host);
+    // Clean up thread-local data for removed hosts across all threads (if TLS is initialized)
+    if (tls_slot_) {
+      tls_slot_->runOnAllThreads([host](OptRef<PerThreadData> obj) -> void {
+        if (obj.has_value()) {
+          obj->removeHostStats(host);
+        }
+      });
+    }
   }
 }
 
@@ -244,6 +300,42 @@ void PeakEwmaLoadBalancer::prefetchHostData(
 Upstream::HostConstSharedPtr
 PeakEwmaLoadBalancer::peekAnotherHost(ABSL_ATTRIBUTE_UNUSED Upstream::LoadBalancerContext* context) {
   return nullptr;
+}
+
+// Thread-local storage access methods
+PerThreadData& PeakEwmaLoadBalancer::getThreadLocalData() {
+  // Lazy initialization of TLS slot to avoid main thread requirement
+  if (!tls_slot_) {
+    try {
+      tls_slot_ = ThreadLocal::TypedSlot<PerThreadData>::makeUnique(tls_allocator_);
+      tls_slot_->set([](Event::Dispatcher&) -> std::shared_ptr<PerThreadData> {
+        return std::make_shared<PerThreadData>();
+      });
+    } catch (const std::exception&) {
+      // TLS not available (e.g., in tests or certain contexts), return a static instance
+      static PerThreadData static_instance;
+      return static_instance;
+    }
+  }
+  
+  auto opt_ref = tls_slot_->get();
+  if (opt_ref.has_value()) {
+    return opt_ref.ref();
+  } else {
+    // Fallback to static instance if TLS is not available
+    static PerThreadData static_instance;
+    return static_instance;
+  }
+}
+
+PerThreadHostStats& PeakEwmaLoadBalancer::getOrCreateThreadLocalHostStats(Upstream::HostConstSharedPtr host) {
+  return getThreadLocalData().getOrCreateHostStats(host, tau_nanos_);
+}
+
+void PeakEwmaLoadBalancer::removeThreadLocalHostStats(Upstream::HostConstSharedPtr host) {
+  if (tls_slot_ && tls_slot_->currentThreadRegistered()) {
+    getThreadLocalData().removeHostStats(host);
+  }
 }
 
 } // namespace PeakEwma

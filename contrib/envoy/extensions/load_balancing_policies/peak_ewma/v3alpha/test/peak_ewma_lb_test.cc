@@ -29,6 +29,26 @@ namespace Envoy {
 namespace Extensions {
 namespace LoadBalancingPolicies {
 namespace PeakEwma {
+
+// Simple ThreadLocal mock for testing
+class MockThreadLocalInstance : public ThreadLocal::SlotAllocator {
+public:
+  ThreadLocal::SlotPtr allocateSlot() override {
+    return std::make_unique<MockSlot>();
+  }
+
+private:
+  class MockSlot : public ThreadLocal::Slot {
+  public:
+    bool currentThreadRegistered() override { return true; }
+    ThreadLocal::ThreadLocalObjectSharedPtr get() override { return nullptr; }
+    void set(InitializeCb) override {}
+    void runOnAllThreads(const UpdateCb&) override {}
+    void runOnAllThreads(const UpdateCb&, const std::function<void()>&) override {}
+    bool isShutdown() const override { return false; }
+  };
+};
+
 namespace {
 
 class PeakEwmaTestPeer {
@@ -81,7 +101,7 @@ public:
 
     lb_ = std::make_unique<PeakEwmaLoadBalancer>(
         params.priority_set, params.local_priority_set, stats_, runtime_, random_, 50,
-        *cluster_info_, time_source_, config_);
+        *cluster_info_, time_source_, config_, tls_);
 
     // Trigger the member update callback by calling runCallbacks
     host_set_->runCallbacks(hosts_, {});
@@ -119,6 +139,7 @@ public:
   NiceMock<Runtime::MockLoader> runtime_;
   NiceMock<Random::MockRandomGenerator> random_;
   MockTimeSystem time_source_;
+  MockThreadLocalInstance tls_;
   std::chrono::nanoseconds current_time_;
   envoy::extensions::load_balancing_policies::peak_ewma::v3alpha::PeakEwma config_;
   std::unique_ptr<PeakEwmaLoadBalancer> lb_;

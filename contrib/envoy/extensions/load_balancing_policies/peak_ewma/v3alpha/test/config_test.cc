@@ -25,6 +25,26 @@ namespace Envoy {
 namespace Extensions {
 namespace LoadBalancingPolicies {
 namespace PeakEwma {
+
+// Simple ThreadLocal mock for testing
+class MockThreadLocalInstance : public ThreadLocal::SlotAllocator {
+public:
+  ThreadLocal::SlotPtr allocateSlot() override {
+    return std::make_unique<MockSlot>();
+  }
+
+private:
+  class MockSlot : public ThreadLocal::Slot {
+  public:
+    bool currentThreadRegistered() override { return true; }
+    ThreadLocal::ThreadLocalObjectSharedPtr get() override { return nullptr; }
+    void set(InitializeCb) override {}
+    void runOnAllThreads(const UpdateCb&) override {}
+    void runOnAllThreads(const UpdateCb&, const std::function<void()>&) override {}
+    bool isShutdown() const override { return false; }
+  };
+};
+
 namespace {
 
 class PeakEwmaConfigTest : public ::testing::Test {
@@ -44,6 +64,7 @@ public:
   NiceMock<Runtime::MockLoader> runtime_;
   NiceMock<Random::MockRandomGenerator> random_;
   MockTimeSystem time_source_;
+  MockThreadLocalInstance tls_;
 };
 
 TEST_F(PeakEwmaConfigTest, FactoryRegistration) {
@@ -166,13 +187,13 @@ TEST_F(PeakEwmaConfigTest, ConfigValidation) {
   // Very small decay time
   proto_config.mutable_decay_time()->set_nanos(1000000);  // 1ms
   
-  PeakEwmaLbConfig config(proto_config);
+  PeakEwmaLbConfig config(proto_config, tls_);
   EXPECT_EQ(config.proto_config_.decay_time().nanos(), 1000000);
   
   // Very large decay time
   proto_config.mutable_decay_time()->set_seconds(300);
   
-  PeakEwmaLbConfig config2(proto_config);
+  PeakEwmaLbConfig config2(proto_config, tls_);
   EXPECT_EQ(config2.proto_config_.decay_time().seconds(), 300);
 }
 
