@@ -5,6 +5,7 @@
 #include "test/mocks/http/mocks.h"
 #include "test/mocks/upstream/host.h"
 #include "test/test_common/utility.h"
+#include "test/common/stats/stat_test_utility.h"
 
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
@@ -25,11 +26,13 @@ using LoadBalancingPolicies::PeakEwma::kDefaultDecayTimeSeconds;
 class PeakEwmaRttFilterTest : public ::testing::Test {
 protected:
   void SetUp() override {
-    filter_ = std::make_shared<PeakEwmaRttFilter>();
+    filter_ = std::make_shared<PeakEwmaRttFilter>(scope_);
     filter_->setDecoderFilterCallbacks(decoder_callbacks_);
     filter_->setEncoderFilterCallbacks(encoder_callbacks_);
   }
 
+  Stats::TestUtil::TestStore store_;
+  Stats::ScopeSharedPtr scope_{store_.rootScope()};
   std::shared_ptr<PeakEwmaRttFilter> filter_;
   NiceMock<Http::MockStreamDecoderFilterCallbacks> decoder_callbacks_;
   NiceMock<Http::MockStreamEncoderFilterCallbacks> encoder_callbacks_;
@@ -160,9 +163,9 @@ TEST_F(PeakEwmaRttFilterTest, EncodeHeadersWithPeakEwmaStats) {
   auto address = Network::Utility::parseInternetAddressAndPortNoThrow("127.0.0.1:8080");
   ON_CALL(*mock_host, address()).WillByDefault(Return(address));
   
-  // Use TestUtil::TestScope for stats scope
-  Stats::TestUtil::TestStore store;
-  auto scope = store.rootScope();
+  // Use TestStore for stats scope
+  Stats::TestUtil::TestStore test_store;
+  Stats::ScopeSharedPtr test_scope = test_store.rootScope();
   
   // Use MockTimeSystem for time source
   MockTimeSystem time_system;
@@ -177,7 +180,7 @@ TEST_F(PeakEwmaRttFilterTest, EncodeHeadersWithPeakEwmaStats) {
   auto stats = std::make_unique<LoadBalancingPolicies::PeakEwma::GlobalHostStats>(
       *mock_host,
       kDefaultDecayTimeSeconds * 1000000000LL, // tau_nanos
-      *scope,
+      *test_scope,
       time_system);
   
   // Set the LB policy data on the mock host

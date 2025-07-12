@@ -10,9 +10,10 @@ namespace PeakEwma {
 
 Http::FilterFactoryCb PeakEwmaFilterConfigFactory::createFilterFactoryFromProtoTyped(
     const envoy::extensions::filters::http::peak_ewma::v3alpha::PeakEwmaConfig&,
-    const std::string&, Server::Configuration::FactoryContext&) {
-  return [](Http::FilterChainFactoryCallbacks& callbacks) -> void {
-    callbacks.addStreamFilter(std::make_shared<PeakEwmaRttFilter>());
+    const std::string& stats_prefix, Server::Configuration::FactoryContext& context) {
+  return [&context, stats_prefix](Http::FilterChainFactoryCallbacks& callbacks) -> void {
+    auto stats_scope = context.scope().createScope(stats_prefix + "peak_ewma_filter.");
+    callbacks.addStreamFilter(std::make_shared<PeakEwmaRttFilter>(stats_scope));
   };
 }
 
