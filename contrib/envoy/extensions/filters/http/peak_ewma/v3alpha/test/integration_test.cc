@@ -63,6 +63,7 @@ public:
           name: envoy.load_balancing_policies.peak_ewma
           typed_config:
             "@type": type.googleapis.com/envoy.extensions.load_balancing_policies.peak_ewma.v3alpha.PeakEwma
+            decay_time: 0.100s
       )EOF";
 
       TestUtility::loadFromYaml(policy_yaml, *policy);
@@ -116,7 +117,7 @@ public:
       // Simulate different response times by delaying some upstreams
       if (upstream_index.value() == 1) {
         // Add artificial delay for upstream 1 to make it "slower"
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
       }
 
       upstream_request_->encodeHeaders(default_response_headers_, true);
@@ -145,7 +146,7 @@ public:
 
       // Continue to simulate delay for upstream 1
       if (upstream_index.value() == 1) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
       }
 
       upstream_request_->encodeHeaders(default_response_headers_, true);

@@ -25,8 +25,7 @@ GlobalHostStats::GlobalHostStats(const Upstream::Host& host, int64_t tau_nanos,
       time_source_(time_source),
       cost_stat_(scope.gaugeFromString(
           "peak_ewma." + host.address()->asString() + ".cost",
-          Stats::Gauge::ImportMode::NeverImport)),
-      direct_ewma_(tau_nanos, 0.0) {
+          Stats::Gauge::ImportMode::NeverImport)) {
   // Initialize EWMA data with default values
   uint64_t current_time_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
       time_source_.monotonicTime().time_since_epoch()).count();
@@ -70,38 +69,72 @@ void GlobalHostStats::updateGlobalEwma(double new_ewma, uint64_t timestamp_ns) {
 }
 
 void GlobalHostStats::recordRttSample(std::chrono::milliseconds rtt) {
-  // Temporary implementation: Record RTT directly in GlobalHostStats
-  // This provides immediate EWMA updating for integration tests
-  // Will be replaced by per-thread aggregation in Phase 4
-  std::lock_guard<std::mutex> lock(rtt_mutex_);
-  
   uint64_t timestamp_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
       time_source_.monotonicTime().time_since_epoch()).count();
+
+  // Phase 4: Record in thread-local circular buffers
+  if (load_balancer_) {
+    try {
+      // Get the host associated with this GlobalHostStats
+      // We need to find the host from the load balancer's host_stats_map_
+      for (const auto& [host, stats] : load_balancer_->host_stats_map_) {
+        if (stats.get() == this) {
+          // Found our host, record in thread-local buffer
+          auto& thread_stats = load_balancer_->getOrCreateThreadLocalHostStats(host);
+          thread_stats.recordRttSample(rtt, timestamp_ns);
+          return; // Successfully recorded in thread-local buffer
+        }
+      }
+    } catch (const std::exception&) {
+      // If thread-local recording fails, silently drop the sample
+      // The timer-based aggregation system will handle EWMA updates
+    }
+  }
   
-  // Update the direct EWMA calculator
-  direct_ewma_.insert(static_cast<double>(rtt.count()), timestamp_ns);
-  
-  // Update the atomic EWMA data for lock-free reads
-  double current_ewma = direct_ewma_.value(timestamp_ns);
-  const EwmaTimestampData* new_data = new EwmaTimestampData(current_ewma, timestamp_ns);
-  const EwmaTimestampData* old_data = current_ewma_data_.exchange(new_data);
-  delete old_data;
+  // Note: No fallback needed - timer-based aggregation handles all EWMA updates
 }
 
 // PerThreadHostStats implementation
-PerThreadHostStats::PerThreadHostStats(Upstream::HostConstSharedPtr host, int64_t tau_nanos)
-    : host_(host), local_ewma_(tau_nanos, 0.0) {}
+PerThreadHostStats::PerThreadHostStats(Upstream::HostConstSharedPtr host, uint32_t max_samples)
+    : host_(host), active_buffer_(&buffer_a_), max_samples_(max_samples) {
+  // Reserve space for efficiency
+  buffer_a_.reserve(max_samples);
+  buffer_b_.reserve(max_samples);
+}
 
 void PerThreadHostStats::recordRttSample(std::chrono::milliseconds rtt, uint64_t timestamp_ns) {
-  local_ewma_.insert(static_cast<double>(rtt.count()), timestamp_ns);
+  // Lock-free write to active buffer
+  auto* buffer = active_buffer_.load(std::memory_order_relaxed);
+  
+  // Circular buffer behavior: overwrite oldest when at capacity
+  if (buffer->size() >= max_samples_) {
+    // Simple circular: remove first element and add new one
+    buffer->erase(buffer->begin());
+  }
+  
+  buffer->emplace_back(static_cast<double>(rtt.count()), timestamp_ns);
   last_update_timestamp_ = timestamp_ns;
 }
 
+std::vector<RttSample> PerThreadHostStats::collectAndSwapBuffers() {
+  // Atomic swap to inactive buffer
+  auto* old_buffer = (active_buffer_.load() == &buffer_a_) ? &buffer_b_ : &buffer_a_;
+  auto* new_active = active_buffer_.exchange(old_buffer, std::memory_order_acq_rel);
+  
+  // Copy collected samples from now-inactive buffer
+  std::vector<RttSample> collected = *new_active;
+  
+  // Clear the collected buffer for next cycle
+  new_active->clear();
+  
+  return collected;
+}
+
 // PerThreadData implementation
-PerThreadHostStats& PerThreadData::getOrCreateHostStats(Upstream::HostConstSharedPtr host, int64_t tau_nanos) {
+PerThreadHostStats& PerThreadData::getOrCreateHostStats(Upstream::HostConstSharedPtr host) {
   auto it = host_stats_.find(host);
   if (it == host_stats_.end()) {
-    auto stats = std::make_unique<PerThreadHostStats>(host, tau_nanos);
+    auto stats = std::make_unique<PerThreadHostStats>(host, max_samples_per_host_);
     auto* stats_ptr = stats.get();
     host_stats_[host] = std::move(stats);
     return *stats_ptr;
@@ -119,7 +152,7 @@ PeakEwmaLoadBalancer::PeakEwmaLoadBalancer(
     uint32_t healthy_panic_threshold, const Upstream::ClusterInfo& cluster_info,
     TimeSource& time_source,
     const envoy::extensions::load_balancing_policies::peak_ewma::v3alpha::PeakEwma& config,
-    ThreadLocal::SlotAllocator& tls_allocator)
+    ThreadLocal::SlotAllocator& tls_allocator, Event::Dispatcher& main_dispatcher)
     : ZoneAwareLoadBalancerBase(priority_set, local_priority_set, stats, runtime, random,
                                 healthy_panic_threshold, absl::nullopt),
       cluster_info_(cluster_info),
@@ -128,7 +161,13 @@ PeakEwmaLoadBalancer::PeakEwmaLoadBalancer(
       tau_nanos_(config_proto_.has_decay_time() ? 
           DurationUtil::durationToMilliseconds(config_proto_.decay_time()) * 1000000LL :
           kDefaultDecayTimeSeconds * 1000000000LL),
-      tls_allocator_(tls_allocator) {
+      max_samples_per_host_(config_proto_.has_max_samples_per_host() ? 
+          config_proto_.max_samples_per_host().value() : kDefaultMaxSamplesPerHost),
+      tls_allocator_(tls_allocator),
+      main_dispatcher_(main_dispatcher),
+      aggregation_interval_(config_proto_.has_aggregation_interval() ?
+          std::chrono::milliseconds(DurationUtil::durationToMilliseconds(config_proto_.aggregation_interval())) :
+          std::chrono::milliseconds(100)) {
   member_update_cb_handle_ = priority_set.addMemberUpdateCb(
       [this](const Upstream::HostVector& hosts_added, const Upstream::HostVector& hosts_removed) -> absl::Status {
         onHostSetUpdate(hosts_added, hosts_removed);
@@ -138,6 +177,9 @@ PeakEwmaLoadBalancer::PeakEwmaLoadBalancer(
   for (const auto& host_set : priority_set.hostSetsPerPriority()) {
     onHostSetUpdate(host_set->hosts(), {});
   }
+  
+  // Start the aggregation timer
+  startAggregationTimer();
 }
 
 void PeakEwmaLoadBalancer::onHostSetUpdate(
@@ -146,11 +188,14 @@ void PeakEwmaLoadBalancer::onHostSetUpdate(
   for (const auto& host : hosts_added) {
     auto stats = std::make_unique<GlobalHostStats>(*host, tau_nanos_,
                                                    cluster_info_.statsScope(), time_source_);
+    stats->setLoadBalancer(this); // Set reference for thread-local recording
     host->setLbPolicyData(std::move(stats));
     
     // Maintain internal map for fallback compatibility
-    host_stats_map_.try_emplace(host, std::make_unique<GlobalHostStats>(*host, tau_nanos_,
-                                cluster_info_.statsScope(), time_source_));
+    auto fallback_stats = std::make_unique<GlobalHostStats>(*host, tau_nanos_,
+                                                            cluster_info_.statsScope(), time_source_);
+    fallback_stats->setLoadBalancer(this); // Set reference for thread-local recording
+    host_stats_map_.try_emplace(host, std::move(fallback_stats));
   }
   for (const auto& host : hosts_removed) {
     host_stats_map_.erase(host);
@@ -308,12 +353,12 @@ PerThreadData& PeakEwmaLoadBalancer::getThreadLocalData() {
   if (!tls_slot_) {
     try {
       tls_slot_ = ThreadLocal::TypedSlot<PerThreadData>::makeUnique(tls_allocator_);
-      tls_slot_->set([](Event::Dispatcher&) -> std::shared_ptr<PerThreadData> {
-        return std::make_shared<PerThreadData>();
+      tls_slot_->set([this](Event::Dispatcher&) -> std::shared_ptr<PerThreadData> {
+        return std::make_shared<PerThreadData>(max_samples_per_host_);
       });
     } catch (const std::exception&) {
       // TLS not available (e.g., in tests or certain contexts), return a static instance
-      static PerThreadData static_instance;
+      static PerThreadData static_instance(kDefaultMaxSamplesPerHost);
       return static_instance;
     }
   }
@@ -323,19 +368,112 @@ PerThreadData& PeakEwmaLoadBalancer::getThreadLocalData() {
     return opt_ref.ref();
   } else {
     // Fallback to static instance if TLS is not available
-    static PerThreadData static_instance;
+    static PerThreadData static_instance(kDefaultMaxSamplesPerHost);
     return static_instance;
   }
 }
 
 PerThreadHostStats& PeakEwmaLoadBalancer::getOrCreateThreadLocalHostStats(Upstream::HostConstSharedPtr host) {
-  return getThreadLocalData().getOrCreateHostStats(host, tau_nanos_);
+  return getThreadLocalData().getOrCreateHostStats(host);
 }
 
 void PeakEwmaLoadBalancer::removeThreadLocalHostStats(Upstream::HostConstSharedPtr host) {
   if (tls_slot_ && tls_slot_->currentThreadRegistered()) {
     getThreadLocalData().removeHostStats(host);
   }
+}
+
+void PeakEwmaLoadBalancer::aggregateWorkerData() {
+  // This method runs on the main thread and collects RTT samples from all worker threads
+  if (!tls_slot_) {
+    return; // TLS not initialized
+  }
+
+  // Map to collect all RTT samples per host across all worker threads
+  absl::flat_hash_map<Upstream::HostConstSharedPtr, std::vector<RttSample>> host_samples;
+
+  // Collect samples from all worker threads
+  tls_slot_->runOnAllThreads([&host_samples](OptRef<PerThreadData> obj) -> void {
+    if (!obj.has_value()) {
+      return;
+    }
+    
+    // Iterate through all hosts in this worker thread
+    for (auto& [host, stats] : obj->host_stats_) {
+      // Collect and swap buffers to get RTT samples
+      std::vector<RttSample> collected_samples = stats->collectAndSwapBuffers();
+      
+      if (!collected_samples.empty()) {
+        // Add samples to the aggregated collection
+        auto& aggregated = host_samples[host];
+        aggregated.insert(aggregated.end(), collected_samples.begin(), collected_samples.end());
+      }
+    }
+  });
+
+  // Process aggregated samples for each host
+  uint64_t current_time_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      time_source_.monotonicTime().time_since_epoch()).count();
+
+  for (const auto& [host, samples] : host_samples) {
+    if (samples.empty()) {
+      continue;
+    }
+
+    // Get GlobalHostStats for this host
+    auto stats_it = host_stats_map_.find(host);
+    if (stats_it == host_stats_map_.end()) {
+      continue; // Host was removed
+    }
+
+    GlobalHostStats* global_stats = stats_it->second.get();
+    
+    // Compute new EWMA from all collected samples
+    // For now, we'll use a simple approach: process samples in chronological order
+    std::vector<RttSample> sorted_samples = samples;
+    std::sort(sorted_samples.begin(), sorted_samples.end(), 
+              [](const RttSample& a, const RttSample& b) {
+                return a.timestamp_ns < b.timestamp_ns;
+              });
+
+    // Get current EWMA value as starting point
+    double current_ewma = global_stats->getEwmaRttMs(current_time_ns);
+    uint64_t last_timestamp = current_time_ns;
+
+    // Apply each sample to update the EWMA
+    for (const auto& sample : sorted_samples) {
+      // Calculate time delta since last update
+      int64_t time_delta_ns = static_cast<int64_t>(sample.timestamp_ns) - static_cast<int64_t>(last_timestamp);
+      
+      if (time_delta_ns > 0) {
+        // Apply time-based decay
+        double alpha = FastAlphaCalculator::timeGapToAlpha(time_delta_ns, tau_nanos_);
+        current_ewma = current_ewma + alpha * (sample.rtt_ms - current_ewma);
+        last_timestamp = sample.timestamp_ns;
+      }
+    }
+
+    // Update the global EWMA with the new computed value
+    global_stats->updateGlobalEwma(current_ewma, last_timestamp);
+  }
+}
+
+void PeakEwmaLoadBalancer::startAggregationTimer() {
+  // Create timer for periodic aggregation
+  aggregation_timer_ = main_dispatcher_.createTimer([this]() {
+    onAggregationTimer();
+  });
+  
+  // Start the timer with the configured interval
+  aggregation_timer_->enableTimer(aggregation_interval_);
+}
+
+void PeakEwmaLoadBalancer::onAggregationTimer() {
+  // Aggregate worker data from all threads
+  aggregateWorkerData();
+  
+  // Reschedule the timer for the next aggregation cycle
+  aggregation_timer_->enableTimer(aggregation_interval_);
 }
 
 } // namespace PeakEwma

@@ -7,6 +7,7 @@
 
 #include "test/common/stats/stat_test_utility.h"
 #include "test/mocks/common.h"
+#include "test/mocks/event/mocks.h"
 #include "test/mocks/runtime/mocks.h"
 #include "test/mocks/server/factory_context.h"
 #include "test/mocks/upstream/cluster_info.h"
@@ -64,6 +65,7 @@ public:
   NiceMock<Runtime::MockLoader> runtime_;
   NiceMock<Random::MockRandomGenerator> random_;
   MockTimeSystem time_source_;
+  NiceMock<Event::MockDispatcher> dispatcher_;
   MockThreadLocalInstance tls_;
 };
 
@@ -187,13 +189,13 @@ TEST_F(PeakEwmaConfigTest, ConfigValidation) {
   // Very small decay time
   proto_config.mutable_decay_time()->set_nanos(1000000);  // 1ms
   
-  PeakEwmaLbConfig config(proto_config, tls_);
+  PeakEwmaLbConfig config(proto_config, dispatcher_, tls_);
   EXPECT_EQ(config.proto_config_.decay_time().nanos(), 1000000);
   
   // Very large decay time
   proto_config.mutable_decay_time()->set_seconds(300);
   
-  PeakEwmaLbConfig config2(proto_config, tls_);
+  PeakEwmaLbConfig config2(proto_config, dispatcher_, tls_);
   EXPECT_EQ(config2.proto_config_.decay_time().seconds(), 300);
 }
 

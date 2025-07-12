@@ -6,6 +6,7 @@
 
 #include "test/common/stats/stat_test_utility.h"
 #include "test/mocks/common.h"
+#include "test/mocks/event/mocks.h"
 #include "test/mocks/network/mocks.h"
 #include "test/mocks/runtime/mocks.h"
 #include "test/mocks/upstream/cluster_info.h"
@@ -101,7 +102,7 @@ public:
 
     lb_ = std::make_unique<PeakEwmaLoadBalancer>(
         params.priority_set, params.local_priority_set, stats_, runtime_, random_, 50,
-        *cluster_info_, time_source_, config_, tls_);
+        *cluster_info_, time_source_, config_, tls_, dispatcher_);
 
     // Trigger the member update callback by calling runCallbacks
     host_set_->runCallbacks(hosts_, {});
@@ -139,6 +140,7 @@ public:
   NiceMock<Runtime::MockLoader> runtime_;
   NiceMock<Random::MockRandomGenerator> random_;
   MockTimeSystem time_source_;
+  NiceMock<Event::MockDispatcher> dispatcher_;
   MockThreadLocalInstance tls_;
   std::chrono::nanoseconds current_time_;
   envoy::extensions::load_balancing_policies::peak_ewma::v3alpha::PeakEwma config_;

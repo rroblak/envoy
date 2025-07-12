@@ -18,7 +18,7 @@ Upstream::LoadBalancerPtr PeakEwmaCreator::operator()(
       PROTOBUF_PERCENT_TO_ROUNDED_INTEGER_OR_DEFAULT(cluster_info.lbConfig(),
                                                      healthy_panic_threshold, 100, 50),
       cluster_info, time_source, typed_lb_config->proto_config_, 
-      typed_lb_config->tls_slot_allocator_);
+      typed_lb_config->tls_slot_allocator_, typed_lb_config->main_dispatcher_);
 }
 
 /**

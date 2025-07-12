@@ -1,5 +1,6 @@
 #pragma once
 
+#include "envoy/event/dispatcher.h"
 #include "envoy/upstream/load_balancer.h"
 #include "envoy/thread_local/thread_local.h"
 
@@ -19,10 +20,12 @@ using PeakEwmaLbProto = envoy::extensions::load_balancing_policies::peak_ewma::v
 
 class PeakEwmaLbConfig : public Upstream::LoadBalancerConfig {
 public:
-  PeakEwmaLbConfig(const PeakEwmaLbProto& proto_config, ThreadLocal::SlotAllocator& tls_allocator) 
-    : proto_config_(proto_config), tls_slot_allocator_(tls_allocator) {}
+  PeakEwmaLbConfig(const PeakEwmaLbProto& proto_config, Event::Dispatcher& main_dispatcher,
+                   ThreadLocal::SlotAllocator& tls_allocator) 
+    : proto_config_(proto_config), main_dispatcher_(main_dispatcher), tls_slot_allocator_(tls_allocator) {}
 
   const PeakEwmaLbProto proto_config_;
+  Event::Dispatcher& main_dispatcher_;
   ThreadLocal::SlotAllocator& tls_slot_allocator_;
 };
 
@@ -44,7 +47,7 @@ public:
              const Protobuf::Message& config) override {
     ASSERT(dynamic_cast<const PeakEwmaLbProto*>(&config) != nullptr);
     const PeakEwmaLbProto& typed_config = dynamic_cast<const PeakEwmaLbProto&>(config);
-    return Upstream::LoadBalancerConfigPtr{new PeakEwmaLbConfig(typed_config, context.threadLocal())};
+    return Upstream::LoadBalancerConfigPtr{new PeakEwmaLbConfig(typed_config, context.mainThreadDispatcher(), context.threadLocal())};
   }
 };
 
