@@ -8,6 +8,8 @@
 #include "source/extensions/filters/http/common/pass_through_filter.h"
 #include "contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/source/peak_ewma_lb.h"
 
+#include "absl/container/flat_hash_map.h"
+
 namespace Envoy {
 namespace Extensions {
 namespace HttpFilters {
@@ -39,9 +41,15 @@ public:
   Http::FilterHeadersStatus encodeHeaders(Http::ResponseHeaderMap& headers, bool end_stream) override;
 
 private:
+  // Get or create histogram for specific host - following Peak EWMA LB pattern
+  Stats::Histogram& getHostRttHistogram(const std::string& host_address);
+  
   MonotonicTime request_start_time_;
   PeakEwmaFilterStats stats_;
   Stats::ScopeSharedPtr scope_;
+  
+  // Cache for per-host RTT histograms
+  absl::flat_hash_map<std::string, Stats::Histogram*> host_rtt_histograms_;
 };
 
 } // namespace PeakEwma

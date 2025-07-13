@@ -14,6 +14,18 @@ PeakEwmaRttFilter::PeakEwmaRttFilter(Stats::ScopeSharedPtr scope)
       stats_(PeakEwmaFilterStats{ALL_PEAK_EWMA_FILTER_STATS(POOL_COUNTER(*scope), POOL_GAUGE(*scope), POOL_HISTOGRAM(*scope))}),
       scope_(scope) {}
 
+Stats::Histogram& PeakEwmaRttFilter::getHostRttHistogram(const std::string& host_address) {
+  auto it = host_rtt_histograms_.find(host_address);
+  if (it != host_rtt_histograms_.end()) {
+    return *it->second;
+  }
+  
+  // Create new histogram for this host - same pattern as Peak EWMA LB
+  std::string metric_name = "peak_ewma_filter." + host_address + ".rtt_ms";
+  Stats::Histogram& histogram = scope_->histogramFromString(metric_name, Stats::Histogram::Unit::Milliseconds);
+  host_rtt_histograms_[host_address] = &histogram;
+  return histogram;
+}
 
 Http::FilterHeadersStatus PeakEwmaRttFilter::decodeHeaders(Http::RequestHeaderMap&, bool) {
   // Record request start time
@@ -58,6 +70,13 @@ Http::FilterHeadersStatus PeakEwmaRttFilter::encodeHeaders(Http::ResponseHeaderM
   
   if (upstream_info && upstream_info->upstreamHost()) {
     const auto& host_description = upstream_info->upstreamHost();
+    
+    // Record per-host RTT metric - check for null address
+    if (host_description->address()) {
+      const std::string host_address = host_description->address()->asString();
+      Stats::Histogram& host_rtt_histogram = getHostRttHistogram(host_address);
+      host_rtt_histogram.recordValue(rtt.count());
+    }
     
     auto peak_ewma_stats_opt = host_description->typedLbPolicyData<LoadBalancingPolicies::PeakEwma::GlobalHostStats>();
     if (peak_ewma_stats_opt.has_value()) {
