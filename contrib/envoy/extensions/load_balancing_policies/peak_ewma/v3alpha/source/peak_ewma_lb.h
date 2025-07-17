@@ -55,7 +55,7 @@ struct EwmaTimestampData {
 struct alignas(kCacheLineAlignment) GlobalHostStats : public Upstream::HostLbPolicyData {
   friend class PeakEwmaLoadBalancer;
 public:
-  GlobalHostStats(const Upstream::Host& host, int64_t tau_nanos, 
+  GlobalHostStats(Upstream::HostConstSharedPtr host, int64_t tau_nanos, 
                   Stats::Scope& scope, TimeSource& time_source);
   
   ~GlobalHostStats();
@@ -91,7 +91,7 @@ public:
   void setLoadBalancer(PeakEwmaLoadBalancer* lb) { load_balancer_ = lb; }
   
   // For observability
-  void setComputedCostStat(double cost) { cost_stat_.set(static_cast<uint64_t>(cost)); }
+  void setComputedCostStat(double cost);
 
   // EWMA data with lock-free reads via atomic pointer
   std::atomic<const EwmaTimestampData*> current_ewma_data_;
@@ -105,6 +105,9 @@ private:
   const uint64_t default_rtt_ns_;
   TimeSource& time_source_;
   Stats::Gauge& cost_stat_;
+  
+  // Reference to our host (avoids reverse lookup)
+  Upstream::HostConstSharedPtr host_;
   
   // Reference to load balancer for thread-local recording (Phase 4)
   PeakEwmaLoadBalancer* load_balancer_{nullptr};
@@ -181,7 +184,7 @@ public:
       uint32_t healthy_panic_threshold, const Upstream::ClusterInfo& cluster_info,
       TimeSource& time_source,
       const envoy::extensions::load_balancing_policies::peak_ewma::v3alpha::PeakEwma& config,
-      ThreadLocal::SlotAllocator& tls_allocator, Event::Dispatcher& main_dispatcher);
+      Event::Dispatcher& main_dispatcher, const std::unique_ptr<ThreadLocal::TypedSlot<PerThreadData>>& tls_slot);
 
   Upstream::HostConstSharedPtr chooseHostOnce(Upstream::LoadBalancerContext* context) override;
   Upstream::HostConstSharedPtr peekAnotherHost(Upstream::LoadBalancerContext* context) override;
@@ -190,22 +193,17 @@ private:
   friend class PeakEwmaTestPeer;
   friend struct GlobalHostStats;
 
-  using HostStatsMap = absl::flat_hash_map<Upstream::HostConstSharedPtr, std::unique_ptr<GlobalHostStats>>;
   using HostCostPair = std::pair<Upstream::HostConstSharedPtr, double>;
-  using HostStatIterator = HostStatsMap::iterator;
 
   Upstream::HostConstSharedPtr selectFromTwoCandidates(
       const Upstream::HostVector& hosts, uint64_t random_value);
-  double calculateHostCost(Upstream::HostConstSharedPtr host, HostStatIterator& iterator);
+  double calculateHostCost(Upstream::HostConstSharedPtr host);
   double calculateHostCostBranchless(double rtt_ewma, double active_requests) const;
-  HostStatIterator findHostStats(Upstream::HostConstSharedPtr host);
   
   void onHostSetUpdate(const Upstream::HostVector& hosts_added,
                        const Upstream::HostVector& hosts_removed);
   
   int64_t getCachedTimeNanos() const;
-  void prefetchHostData(const Upstream::HostVector& hosts,
-                        size_t primary_idx, size_t secondary_idx) const;
 
   // Thread-local storage access methods
   PerThreadData& getThreadLocalData();
@@ -214,6 +212,7 @@ private:
 
   // Timer-based aggregation methods (Phase 4)
   void aggregateWorkerData();
+  void processAggregatedSamples(const absl::flat_hash_map<Upstream::HostConstSharedPtr, std::vector<RttSample>>& host_samples);
   void onAggregationTimer();
   void startAggregationTimer();
 
@@ -223,11 +222,9 @@ private:
   const int64_t tau_nanos_;
   const uint32_t max_samples_per_host_;
   Common::CallbackHandlePtr member_update_cb_handle_;
-  HostStatsMap host_stats_map_;
   
-  // Thread-local storage for per-worker statistics (lazy initialized)
-  mutable std::unique_ptr<ThreadLocal::TypedSlot<PerThreadData>> tls_slot_;
-  ThreadLocal::SlotAllocator& tls_allocator_;
+  // Thread-local storage for per-worker statistics (initialized in config)
+  const std::unique_ptr<ThreadLocal::TypedSlot<PerThreadData>>& tls_slot_;
   
   // Timer-based aggregation infrastructure (Phase 4)
   Event::Dispatcher& main_dispatcher_;

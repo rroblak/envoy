@@ -54,12 +54,12 @@ namespace {
 
 class PeakEwmaTestPeer {
 public:
-  PeakEwmaTestPeer(PeakEwmaLoadBalancer& lb) : lb_(lb) {}
-  absl::flat_hash_map<Upstream::HostConstSharedPtr, std::unique_ptr<GlobalHostStats>>& hostStatsMap() {
-    return lb_.host_stats_map_;
+  PeakEwmaTestPeer() = default;
+  // Helper to get GlobalHostStats from host policy data
+  GlobalHostStats* getHostStats(Upstream::HostConstSharedPtr host) {
+    auto stats_opt = host->typedLbPolicyData<GlobalHostStats>();
+    return stats_opt.has_value() ? &stats_opt.ref() : nullptr;
   }
-private:
-  PeakEwmaLoadBalancer& lb_;
 };
 
 class PeakEwmaLoadBalancerTest : public ::testing::Test {
@@ -100,9 +100,17 @@ public:
     Upstream::LoadBalancerParams params{priority_set_, nullptr};
     config_.mutable_decay_time()->set_seconds(10);
 
+    // Create TLS slot for testing (similar to config)
+    const uint32_t max_samples = config_.has_max_samples_per_host() ? 
+        config_.max_samples_per_host().value() : 25000;
+    tls_slot_ = ThreadLocal::TypedSlot<PerThreadData>::makeUnique(tls_);
+    tls_slot_->set([max_samples](Event::Dispatcher&) -> std::shared_ptr<PerThreadData> {
+      return std::make_shared<PerThreadData>(max_samples);
+    });
+
     lb_ = std::make_unique<PeakEwmaLoadBalancer>(
         params.priority_set, params.local_priority_set, stats_, runtime_, random_, 50,
-        *cluster_info_, time_source_, config_, tls_, dispatcher_);
+        *cluster_info_, time_source_, config_, dispatcher_, tls_slot_);
 
     // Trigger the member update callback by calling runCallbacks
     host_set_->runCallbacks(hosts_, {});
@@ -112,20 +120,15 @@ public:
                     uint32_t active_requests) {
     host->stats().rq_active_.set(active_requests);
 
-    // Use internal map for tests (mock hosts don't support setLbPolicyData)
-    PeakEwmaTestPeer peer(*lb_);
-    auto& map = peer.hostStatsMap();
-    auto it = map.find(host);
-    ASSERT_NE(it, map.end()) << "Host " << host->address()->asString() << " not found in host_stats_map_";
+    // Get GlobalHostStats from host policy data
+    PeakEwmaTestPeer peer;
+    auto* host_stats = peer.getHostStats(host);
+    ASSERT_NE(host_stats, nullptr) << "Host " << host->address()->asString() << " has no GlobalHostStats";
     
     // Update the GlobalHostStats with new EWMA data
     uint64_t current_time = std::chrono::duration_cast<std::chrono::nanoseconds>(
         time_source_.monotonicTime().time_since_epoch()).count();
-    it->second->updateGlobalEwma(static_cast<double>(rtt.count()), current_time);
-    
-    // Set pending requests in GlobalHostStats to match the test expectation
-    // Reset to 0 first, then set to desired value
-    it->second->pending_requests.store(active_requests, std::memory_order_relaxed);
+    host_stats->updateGlobalEwma(static_cast<double>(rtt.count()), current_time);
   }
 
   Stats::TestUtil::TestStore store_;
@@ -142,6 +145,7 @@ public:
   MockTimeSystem time_source_;
   NiceMock<Event::MockDispatcher> dispatcher_;
   MockThreadLocalInstance tls_;
+  std::unique_ptr<ThreadLocal::TypedSlot<PerThreadData>> tls_slot_;
   std::chrono::nanoseconds current_time_;
   envoy::extensions::load_balancing_policies::peak_ewma::v3alpha::PeakEwma config_;
   std::unique_ptr<PeakEwmaLoadBalancer> lb_;
@@ -199,7 +203,7 @@ TEST_F(PeakEwmaLoadBalancerTest, P2CSingleHost) {
 TEST_F(PeakEwmaLoadBalancerTest, NoHealthyHosts) {
   // Set up hosts but no healthy hosts
   host_set_->hosts_ = hosts_;
-  host_set_->healthy_hosts_ = {};
+  host_set_->healthy_hosts_ = {}; // No healthy hosts
   host_set_->runCallbacks({}, {});
 
   setHostStats(hosts_[0], std::chrono::milliseconds(100), 1);
@@ -211,7 +215,7 @@ TEST_F(PeakEwmaLoadBalancerTest, NoHealthyHosts) {
   EXPECT_CALL(random_, random()).WillOnce(Return(0));
 
   auto result = lb_->chooseHost(nullptr);
-  // Should select hosts_[0] because it has lower cost (200 < 400)
+  // Should select hosts_[0] because it has lower cost (200 < 600)
   EXPECT_EQ(result.host, hosts_[0]);
 }
 
@@ -229,23 +233,22 @@ TEST_F(PeakEwmaLoadBalancerTest, NoHostsAvailable) {
 TEST_F(PeakEwmaLoadBalancerTest, HostStatsUpdate) {
   setHostStats(hosts_[0], std::chrono::milliseconds(100), 5);
 
-  // Verify host stats are properly stored and can be retrieved via internal map
-  PeakEwmaTestPeer peer(*lb_);
-  auto& map = peer.hostStatsMap();
-  auto it = map.find(hosts_[0]);
-  ASSERT_NE(it, map.end());
+  // Verify host stats are properly stored and can be retrieved from host policy data
+  PeakEwmaTestPeer peer;
+  auto* host_stats = peer.getHostStats(hosts_[0]);
+  ASSERT_NE(host_stats, nullptr);
 
   // Check that EWMA value was set correctly (account for time decay)
-  EXPECT_NEAR(it->second->getEwmaRttMs(), 100.0, 10.0);  // Allow 10ms tolerance for time decay
+  EXPECT_NEAR(host_stats->getEwmaRttMs(), 100.0, 10.0);  // Allow 10ms tolerance for time decay
 
   // Update stats and verify EWMA updates
   uint64_t current_time = std::chrono::duration_cast<std::chrono::nanoseconds>(
       time_source_.monotonicTime().time_since_epoch()).count();
-  it->second->updateGlobalEwma(200.0, current_time);
+  host_stats->updateGlobalEwma(200.0, current_time);
   // With time-based EWMA: peak sensitivity increases learning rate for spikes
   // Expected: weighted blend between 100 and 200, closer to 200 due to peak sensitivity
-  EXPECT_GT(it->second->getEwmaRttMs(), 100.0);  // Should be greater than original
-  EXPECT_LT(it->second->getEwmaRttMs(), 200.0);  // But not a full reset to 200
+  EXPECT_GT(host_stats->getEwmaRttMs(), 100.0);  // Should be greater than original
+  EXPECT_LT(host_stats->getEwmaRttMs(), 200.0);  // But not a full reset to 200
 }
 
 TEST_F(PeakEwmaLoadBalancerTest, CostCalculation) {
@@ -351,14 +354,9 @@ TEST_F(PeakEwmaLoadBalancerTest, PenaltyBasedSystemForNewHosts) {
 
   // Host 0: No RTT history, no active requests (cost = 0.0)
   hosts_[0]->stats().rq_active_.set(0);
-  // Also set GlobalHostStats pending requests
-  PeakEwmaTestPeer peer(*lb_);
-  auto& map = peer.hostStatsMap();
-  map[hosts_[0]]->pending_requests.store(0, std::memory_order_relaxed);
 
   // Host 1: No RTT history, has active requests (cost = penalty + active_requests)
   hosts_[1]->stats().rq_active_.set(2);
-  map[hosts_[1]]->pending_requests.store(2, std::memory_order_relaxed);
 
   // Host 2: Has RTT history with normal cost calculation
   setHostStats(hosts_[2], std::chrono::milliseconds(50), 1);  // cost = 50 * 2 = 100
@@ -369,8 +367,7 @@ TEST_F(PeakEwmaLoadBalancerTest, PenaltyBasedSystemForNewHosts) {
 
   auto result = lb_->chooseHost(nullptr);
   // Should select hosts_[0] because it has cost 0.0 vs penalty + 2 for hosts_[1]
-  // But if the selection isn't working as expected, just verify it's one of the two candidates
-  EXPECT_TRUE(result.host == hosts_[0] || result.host == hosts_[1]);
+  EXPECT_EQ(result.host, hosts_[0]);
 
   // Now test penalty vs normal cost
   // Force P2C to select hosts_[1] (penalty + 2) vs hosts_[2] (100)
@@ -379,8 +376,7 @@ TEST_F(PeakEwmaLoadBalancerTest, PenaltyBasedSystemForNewHosts) {
 
   result = lb_->chooseHost(nullptr);
   // Should select hosts_[2] because normal cost (100) < penalty (very large number)
-  // But just verify it's one of the two candidates for now
-  EXPECT_TRUE(result.host == hosts_[1] || result.host == hosts_[2]);
+  EXPECT_EQ(result.host, hosts_[2]);
 }
 
 TEST_F(PeakEwmaLoadBalancerTest, HostAdditionEnablesProperCostCalculation) {
@@ -394,11 +390,6 @@ TEST_F(PeakEwmaLoadBalancerTest, HostAdditionEnablesProperCostCalculation) {
 
   // Set some active requests on the new host
   new_host->stats().rq_active_.set(5);
-
-  // Simulate adding the host via onHostSetUpdate
-  // Note: We can't directly call onHostSetUpdate with mock hosts because they don't
-  // support setLbPolicyData, but we can test the end-to-end behavior by adding
-  // to the host set and triggering callbacks
 
   // Add the host to our test host set
   std::vector<Upstream::HostSharedPtr> updated_hosts = hosts_;
@@ -415,15 +406,6 @@ TEST_F(PeakEwmaLoadBalancerTest, HostAdditionEnablesProperCostCalculation) {
   // Force P2C to include the new host by using it as one of the choices
   // We'll compare it against hosts_[0] which has no RTT history and no active requests
   hosts_[0]->stats().rq_active_.set(0);  // cost = 0.0
-
-  // Create a scenario where P2C would pick hosts_[0] vs new_host
-  // new_host has 5 active requests and no RTT history, so cost = penalty + 5
-  // hosts_[0] has 0 requests and no RTT history, so cost = 0.0
-
-  // Set pending requests in GlobalHostStats for hosts_[0]
-  PeakEwmaTestPeer peer(*lb_);
-  auto& map = peer.hostStatsMap();
-  map[hosts_[0]]->pending_requests.store(0, std::memory_order_relaxed);
 
   // We can't easily force the exact pair selection with 4 hosts, but we can
   // verify that chooseHost doesn't crash and returns a valid host
@@ -457,35 +439,11 @@ TEST_F(PeakEwmaLoadBalancerTest, HostRemovalDoesNotBreakCostCalculation) {
   EXPECT_NE(result.host, hosts_[1]);
 }
 
-TEST_F(PeakEwmaLoadBalancerTest, FallbackToInternalMap) {
-  // Test fallback to internal map when LB policy data unavailable
-  setHostStats(hosts_[0], std::chrono::milliseconds(80), 2);
-
-
-  // Force P2C to select hosts_[0] vs hosts_[1]
-  // hosts_[0] has cost = 80 * 3 = 240 (via fallback)
-  // hosts_[1] has no stats, so cost depends on active requests
-  hosts_[1]->stats().rq_active_.set(0);  // cost = 0.0 (no RTT, no requests)
-  PeakEwmaTestPeer peer(*lb_);
-  auto& map = peer.hostStatsMap();
-  map[hosts_[1]]->pending_requests.store(0, std::memory_order_relaxed);
-
-  EXPECT_CALL(random_, random()).WillOnce(Return(0));  // Select hosts_[0] vs hosts_[1]
-
-  auto result = lb_->chooseHost(nullptr);
-  // Should select hosts_[1] because 0.0 < 240
-  EXPECT_EQ(result.host, hosts_[1]);
-}
-
 TEST_F(PeakEwmaLoadBalancerTest, CalculateHostCostBranchlessLogic) {
   // Test all three branches of calculateHostCostBranchless through observable behavior
 
   // Branch 1: No RTT data, has active requests -> penalty + active_requests
   hosts_[0]->stats().rq_active_.set(3);
-  // Also set GlobalHostStats pending requests
-  PeakEwmaTestPeer peer(*lb_);
-  auto& map = peer.hostStatsMap();
-  map[hosts_[0]]->pending_requests.store(3, std::memory_order_relaxed);
   // Don't set RTT stats, so no RTT history
 
   // Branch 2: Has RTT data -> rtt_ewma * (active_requests + 1)
@@ -493,44 +451,21 @@ TEST_F(PeakEwmaLoadBalancerTest, CalculateHostCostBranchlessLogic) {
 
   // Branch 3: No RTT data, no active requests -> 0.0
   hosts_[2]->stats().rq_active_.set(0);
-  map[hosts_[2]]->pending_requests.store(0, std::memory_order_relaxed);
   // Don't set RTT stats, so no RTT history
 
   // Test Branch 3 vs Branch 2: 0.0 vs 150
   EXPECT_CALL(random_, random()).WillOnce(Return(5));  // Select hosts_[2] vs hosts_[0] 
   auto result = lb_->chooseHost(nullptr);
   // Should select hosts_[2] (cost 0.0) over hosts_[0] (cost penalty+3)
-  EXPECT_TRUE(result.host == hosts_[2] || result.host == hosts_[0]);
+  EXPECT_EQ(result.host, hosts_[2]);
 
   // Test Branch 1 vs Branch 2: penalty+3 vs 150
   // Penalty is very large, so hosts_[1] should be selected
   EXPECT_CALL(random_, random()).WillOnce(Return(0));  // Select hosts_[0] vs hosts_[1]
   result = lb_->chooseHost(nullptr);
   // Should select hosts_[1] (cost 150) over hosts_[0] (cost penalty+3)
-  EXPECT_TRUE(result.host == hosts_[0] || result.host == hosts_[1]);
+  EXPECT_EQ(result.host, hosts_[1]);
 }
-
-TEST_F(PeakEwmaLoadBalancerTest, PrefetchingDoesNotCrash) {
-  // Test that prefetching functions don't crash
-  // This provides coverage for prefetchHostDataBatch and prefetchHostData
-
-  // Set up some stats so we have valid data to prefetch
-  setHostStats(hosts_[0], std::chrono::milliseconds(50), 1);
-  setHostStats(hosts_[1], std::chrono::milliseconds(30), 2);
-  setHostStats(hosts_[2], std::chrono::milliseconds(40), 3);
-
-  // The prefetching happens inside chooseHost, so just call it multiple times
-  // This exercises the prefetching code paths
-  for (int i = 0; i < 10; ++i) {
-    auto result = lb_->chooseHost(nullptr);
-    EXPECT_NE(result.host, nullptr);
-    EXPECT_TRUE(std::find(hosts_.begin(), hosts_.end(), result.host) != hosts_.end());
-  }
-
-  // If we get here without crashing, prefetching is working correctly
-  SUCCEED();
-}
-
 
 } // namespace
 } // namespace PeakEwma
