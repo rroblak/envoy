@@ -29,17 +29,82 @@ Envoy uses Bazel as its primary build system. Here are the essential development
 - `./tools/spelling/check_spelling_pedantic.py fix` - Fix spelling
 
 ### Development Convenience Scripts
+
+#### build_envoy Function (Recommended)
+A convenience shell function is available for optimized Docker builds with persistent caching:
+
+- `build_envoy` - Build and test contrib extensions with cached dependencies (default)
+- `build_envoy --peak-ewma` or `build_envoy -p` - Build only Peak EWMA extensions with tests
+- `build_envoy dev` - Build standard Envoy without contrib extensions
+- `build_envoy coverage` - Generate coverage report
+- `build_envoy release.server_only` - Release build
+
+The function automatically uses persistent bazel cache and cached binary to avoid re-downloads.
+
+#### Direct Docker Scripts
 - `./ci/run_envoy_docker.sh './ci/do_ci.sh dev'` - Build and test in Docker
-- `./ci/run_envoy_docker.sh './ci/do_ci.sh dev.contrib'` - Build with contrib extensions and test in Docker (recommended for development)
-- `ENVOY_DOCKER_OPTIONS="-v /root/.cache/bazelisk:/build/.cache/bazelisk" ./ci/run_envoy_docker.sh './ci/do_ci.sh dev.contrib //contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/... //contrib/envoy/extensions/filters/http/peak_ewma/v3alpha/...'` - Build Peak EWMA extensions with cached Bazel dependencies
+- `./ci/run_envoy_docker.sh './ci/do_ci.sh dev.contrib'` - Build with contrib extensions and test in Docker
 - `./ci/run_envoy_docker.sh './ci/do_ci.sh release.server_only'` - Release build in Docker
 - `./ci/run_envoy_docker.sh './ci/do_ci.sh coverage'` - Generate coverage report in Docker
+
+#### Build Output Locations
+After running Docker builds, the Envoy binaries are copied to the host filesystem:
+
+**Standard Envoy Binary:**
+- `linux/amd64/build_envoy_fastbuild/envoy` - Fast build
+- `linux/amd64/build_envoy_opt/envoy` - Optimized build  
+- `linux/amd64/build_envoy_dbg/envoy` - Debug build
+
+**Contrib Envoy Binary (includes Peak EWMA):**
+- `linux/amd64/build_envoy-contrib_fastbuild/envoy` - Fast build with contrib extensions
+- `linux/amd64/build_envoy-contrib_opt/envoy` - Optimized build with contrib extensions
+- `linux/amd64/build_envoy-contrib_dbg/envoy` - Debug build with contrib extensions
+
+**Additional Tools:**
+- `config_load_check_tool` - Configuration validation tool
+- `router_check_tool` - Route configuration testing tool  
+- `schema_validator_tool` - Schema validation utility
 
 ### Coverage and Analysis
 - `./ci/run_envoy_docker.sh './ci/do_ci.sh coverage'` - Generate coverage report in Docker (recommended)
 - `./ci/run_envoy_docker.sh './ci/do_ci.sh coverage //contrib/...'` - Generate coverage report for contrib extensions
 - `test/run_envoy_bazel_coverage.sh` - Generate coverage report (direct Bazel)
 - `tools/gen_compilation_database.py` - Generate compilation database for IDEs
+
+### Troubleshooting
+
+#### Bazel Download 403 Error
+If you encounter a 403 error when bazelisk tries to download Bazel (e.g., "HTTP GET https://releases.bazel.build/7.6.0/release/bazel-7.6.0-linux-x86_64 failed with error 403"), follow these steps:
+
+1. **Download Bazel manually to persistent storage:**
+   ```bash
+   mkdir -p /mnt/persistent/bazel-cache
+   wget -O /mnt/persistent/bazel-cache/bazel-7.6.0-linux-x86_64 https://github.com/bazelbuild/bazel/releases/download/7.6.0/bazel-7.6.0-linux-x86_64
+   ```
+
+2. **Create bazelisk cache structure on persistent storage:**
+   ```bash
+   mkdir -p /mnt/persistent/bazel-cache/.cache/bazelisk/downloads/sha256
+   mkdir -p /mnt/persistent/bazel-cache/.cache/bazelisk/bin
+   ```
+
+3. **Copy to cache with SHA256 name:**
+   ```bash
+   SHA256=$(sha256sum /mnt/persistent/bazel-cache/bazel-7.6.0-linux-x86_64 | cut -d' ' -f1)
+   cp /mnt/persistent/bazel-cache/bazel-7.6.0-linux-x86_64 /mnt/persistent/bazel-cache/.cache/bazelisk/downloads/sha256/$SHA256
+   cp /mnt/persistent/bazel-cache/bazel-7.6.0-linux-x86_64 /mnt/persistent/bazel-cache/.cache/bazelisk/bin/bazel-7.6.0-linux-x86_64
+   chmod +x /mnt/persistent/bazel-cache/.cache/bazelisk/bin/bazel-7.6.0-linux-x86_64
+   ```
+
+4. **Use cached binary and persistent build cache in Docker builds:**
+   ```bash
+   ENVOY_DOCKER_BUILD_DIR="/mnt/persistent/bazel-cache/docker-build" \
+   BAZEL_STARTUP_OPTIONS="--output_user_root=/build/bazel-cache --output_base=/build/bazel-cache/base" \
+   ENVOY_DOCKER_OPTIONS="-v /mnt/persistent/bazel-cache/.cache/bazelisk:/build/.cache/bazelisk -v /mnt/persistent/bazel-cache:/build/bazel-cache -e USE_BAZEL_VERSION=/build/.cache/bazelisk/bin/bazel-7.6.0-linux-x86_64" \
+   ./ci/run_envoy_docker.sh './ci/do_ci.sh dev.contrib'
+   ```
+
+This bypasses the bazelisk download and ensures the entire build cache (Bazel binary, build artifacts, and dependencies) persists on the /mnt/persistent volume between builds, avoiding re-downloads and significantly speeding up subsequent builds.
 
 ## Repository Architecture
 
@@ -162,3 +227,30 @@ load_balancing_policy:
 - Unit tests with comprehensive mock infrastructure
 - Integration tests with configurable latency simulation
 - All tests passing with production-ready timer system
+
+### Race Condition Investigation (July 2025)
+
+**Problem**: Implementation shows inconsistent effectiveness - sometimes perfect slow server avoidance (100% fast servers) and sometimes reduced effectiveness (95.7% fast, 4.3% slow). The algorithm is working but with variable performance, suggesting runtime data races rather than complete initialization failure.
+
+**Benchmark Evidence:**
+- "Good" run: 1000/0 requests (fast/slow) - 100% effectiveness
+- "Bad" run: 957/43 requests (fast/slow) - 95.7% effectiveness
+- Algorithm consistently detects and mostly avoids slow servers, but with varying precision
+
+**Failed Fixes Attempted:**
+1. **GlobalHostStats Constructor Race Fix (FAILED)**: 
+   - Theory: HTTP filter records RTT samples before `setLoadBalancer()` is called
+   - Fix: Pass load balancer pointer in constructor instead of separate `setLoadBalancer()` call
+   - Result: No change in behavior - race condition persists
+   - Files modified and reverted: `peak_ewma_lb.h`, `peak_ewma_lb.cc`, `peak_ewma_filter_test.cc`
+
+**Current Leading Theory - Runtime Data Races:**
+- **Buffer Swap Race in `collectAndSwapBuffers()`**: Worker threads writing to "swapped" buffer during collection
+- **Sample Loss**: Inconsistent RTT sample collection leads to variable EWMA accuracy
+- **EWMA Convergence Variability**: Missing samples affect convergence speed and precision
+- **Cost Calculation Inconsistency**: Occasional use of stale/incomplete EWMA data
+
+**Next Investigation Areas:**
+- Fix buffer swap race condition in `PerThreadHostStats::collectAndSwapBuffers()` (peak_ewma_lb.cc:119-131)
+- Memory ordering issues in atomic operations
+- Thread-local storage timing issues with sample collection
