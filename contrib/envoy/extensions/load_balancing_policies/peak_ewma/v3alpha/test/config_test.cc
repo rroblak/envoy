@@ -54,6 +54,10 @@ public:
       : stat_names_(store_.symbolTable()),
         stats_(stat_names_, *store_.rootScope()) {
     ON_CALL(*cluster_info_, statsScope()).WillByDefault(ReturnRef(*store_.rootScope()));
+    
+    // Set up mock time source for PeakEwmaLoadBalancer constructor calls
+    ON_CALL(time_source_, monotonicTime())
+        .WillByDefault(Return(MonotonicTime(std::chrono::milliseconds(1234567890))));
   }
 
   Stats::TestUtil::TestStore store_;
@@ -64,7 +68,7 @@ public:
   NiceMock<Upstream::MockPrioritySet> priority_set_;
   NiceMock<Runtime::MockLoader> runtime_;
   NiceMock<Random::MockRandomGenerator> random_;
-  MockTimeSystem time_source_;
+  NiceMock<MockTimeSystem> time_source_;
   NiceMock<Event::MockDispatcher> dispatcher_;
   MockThreadLocalInstance tls_;
 };

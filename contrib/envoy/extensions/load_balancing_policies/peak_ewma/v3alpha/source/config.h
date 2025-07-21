@@ -22,11 +22,18 @@ class PeakEwmaLbConfig : public Upstream::LoadBalancerConfig {
 public:
   PeakEwmaLbConfig(const PeakEwmaLbProto& proto_config, Event::Dispatcher& main_dispatcher,
                    ThreadLocal::SlotAllocator& tls_allocator) 
-    : proto_config_(proto_config), main_dispatcher_(main_dispatcher), tls_slot_allocator_(tls_allocator) {}
+    : proto_config_(proto_config), main_dispatcher_(main_dispatcher), tls_slot_allocator_(tls_allocator) {
+    // Create TLS slot on main thread during config construction
+    tls_slot_ = ThreadLocal::TypedSlot<PerThreadData>::makeUnique(tls_allocator);
+    tls_slot_->set([](Event::Dispatcher&) -> std::shared_ptr<PerThreadData> {
+      return std::make_shared<PerThreadData>();
+    });
+  }
 
   const PeakEwmaLbProto proto_config_;
   Event::Dispatcher& main_dispatcher_;
   ThreadLocal::SlotAllocator& tls_slot_allocator_;
+  std::unique_ptr<ThreadLocal::TypedSlot<PerThreadData>> tls_slot_;
 };
 
 struct PeakEwmaCreator : public Logger::Loggable<Logger::Id::upstream> {

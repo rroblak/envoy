@@ -9,17 +9,16 @@ licenses(["notice"])  # Apache 2
 envoy_contrib_package()
 
 envoy_cc_test(
-    name = "peak_ewma_lb_test",
-    srcs = ["peak_ewma_lb_test.cc"],
+    name = "peak_ewma_lb_integration_test",
+    srcs = ["peak_ewma_lb_integration_test.cc"],
     deps = [
         "//contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/source:peak_ewma_lb_lib",
         "//source/common/network:address_lib",
         "//test/common/stats:stat_test_utility_lib",
         "//test/mocks:common_lib",
-        "//test/mocks/network:network_mocks",
+        "//test/mocks/event:event_mocks",
         "//test/mocks/runtime:runtime_mocks",
         "//test/mocks/upstream:upstream_mocks",
-        "//test/test_common:status_utility_lib",
     ],
 )
 
@@ -44,5 +43,23 @@ envoy_cc_test(
         "//test/mocks/server:factory_context_mocks",
         "//test/mocks/upstream:upstream_mocks",
         "//test/test_common:utility_lib",
+    ],
+)
+
+envoy_cc_test(
+    name = "cost_calculator_test",
+    srcs = ["cost_calculator_test.cc"],
+    deps = [
+        "//contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/source:peak_ewma_lb_lib",
+    ],
+)
+
+envoy_cc_test(
+    name = "power_of_two_selector_test",
+    srcs = ["power_of_two_selector_test.cc"],
+    deps = [
+        "//contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/source:peak_ewma_lb_lib",
+        "//source/common/network:address_lib",
+        "//test/mocks/upstream:upstream_mocks",
     ],
 )

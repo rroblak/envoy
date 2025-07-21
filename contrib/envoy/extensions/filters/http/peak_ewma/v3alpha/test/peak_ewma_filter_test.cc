@@ -20,7 +20,6 @@ namespace HttpFilters {
 namespace PeakEwma {
 namespace {
 
-using LoadBalancingPolicies::PeakEwma::kDefaultDecayTimeSeconds;
 
 class PeakEwmaRttFilterTest : public ::testing::Test {
 protected:
@@ -173,10 +172,9 @@ TEST_F(PeakEwmaRttFilterTest, EncodeHeadersWithPeakEwmaStats) {
     return MonotonicTime(current_time);
   }));
   
-  // Create Peak EWMA stats with required constructor parameters
+  // Create Peak EWMA stats with simplified constructor
   auto stats = std::make_unique<LoadBalancingPolicies::PeakEwma::GlobalHostStats>(
-      *mock_host,
-      kDefaultDecayTimeSeconds * 1000000000LL, // tau_nanos
+      std::static_pointer_cast<const Upstream::Host>(mock_host),
       *scope,
       time_system);
   

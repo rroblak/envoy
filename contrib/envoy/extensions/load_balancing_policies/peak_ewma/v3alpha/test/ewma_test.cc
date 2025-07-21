@@ -192,94 +192,9 @@ TEST_F(FastAlphaCalculatorTest, ConsistencyWithFormula) {
   EXPECT_NEAR(actual_alpha, expected_alpha, 0.01);
 }
 
-// Test suite for PeakEwmaCalculator
-class PeakEwmaCalculatorTest : public ::testing::Test {
-public:
-  static constexpr int64_t kTau = 100000000;  // 100ms in nanoseconds
-  static constexpr double kInitialValue = 100.0;
-  static constexpr int64_t kBaseTimestamp = 1000000000;  // 1s in nanoseconds
-};
-
-TEST_F(PeakEwmaCalculatorTest, InitialValue) {
-  PeakEwmaCalculator ewma(kTau, kInitialValue);
-  EXPECT_EQ(ewma.lastValue(), kInitialValue);
-}
-
-TEST_F(PeakEwmaCalculatorTest, PeakSensitivityLogic) {
-  PeakEwmaCalculator ewma(kTau, kInitialValue);
-  
-  // Insert a sample higher than current value - should trigger peak sensitivity
-  const double high_sample = 200.0;
-  ewma.insert(high_sample, kBaseTimestamp);
-  
-  const double result_after_peak = ewma.lastValue();
-  
-  // Reset for comparison
-  PeakEwmaCalculator ewma_normal(kTau, kInitialValue);
-  const double low_sample = 50.0;
-  ewma_normal.insert(low_sample, kBaseTimestamp);
-  
-  const double result_after_normal = ewma_normal.lastValue();
-  
-  // The peak-sensitive update should move the average more towards the high sample
-  // than the normal update moves towards the low sample
-  const double peak_change = std::abs(result_after_peak - kInitialValue);
-  const double normal_change = std::abs(result_after_normal - kInitialValue);
-  
-  // Peak sensitivity should cause larger changes for upward spikes
-  EXPECT_GT(peak_change, normal_change);
-}
-
-TEST_F(PeakEwmaCalculatorTest, TimeBasedDecay) {
-  PeakEwmaCalculator ewma(kTau, kInitialValue);
-  
-  // Insert a sample to change the value
-  ewma.insert(200.0, kBaseTimestamp);
-  const double value_after_insert = ewma.lastValue();
-  
-  // Check value after significant time has passed (should decay)
-  const int64_t later_timestamp = kBaseTimestamp + kTau * 2;  // 2 * tau later
-  const double value_after_decay = ewma.value(later_timestamp);
-  
-  // Value should have decayed (moved towards zero)
-  EXPECT_LT(value_after_decay, value_after_insert);
-  EXPECT_GT(value_after_decay, 0.0);  // But not to zero
-}
-
-TEST_F(PeakEwmaCalculatorTest, NoDecayForSmallTimeGaps) {
-  PeakEwmaCalculator ewma(kTau, kInitialValue);
-  
-  ewma.insert(200.0, kBaseTimestamp);
-  const double value_after_insert = ewma.lastValue();
-  
-  // Check value after a very small time gap (< 1ms)
-  const int64_t small_gap_timestamp = kBaseTimestamp + 500000;  // 0.5ms later
-  const double value_after_small_gap = ewma.value(small_gap_timestamp);
-  
-  // Should be the same (no decay applied for small gaps)
-  EXPECT_EQ(value_after_small_gap, value_after_insert);
-}
-
-TEST_F(PeakEwmaCalculatorTest, MonotonicTimestamps) {
-  PeakEwmaCalculator ewma(kTau, kInitialValue);
-  
-  // Insert samples with non-monotonic timestamps
-  ewma.insert(150.0, kBaseTimestamp);
-  ewma.insert(200.0, kBaseTimestamp - 1000000);  // Earlier timestamp
-  
-  // Should not crash and should handle gracefully
-  EXPECT_TRUE(std::isfinite(ewma.lastValue()));
-}
-
-TEST_F(PeakEwmaCalculatorTest, ResetFunctionality) {
-  PeakEwmaCalculator ewma(kTau, kInitialValue);
-  
-  ewma.insert(200.0, kBaseTimestamp);
-  EXPECT_NE(ewma.lastValue(), kInitialValue);
-  
-  ewma.reset(300.0);
-  EXPECT_EQ(ewma.lastValue(), 300.0);
-}
+// Note: PeakEwmaCalculator tests removed as this class is no longer used
+// in the new k-way merge + snapshot architecture. The EWMA computation
+// is now handled directly in the aggregation process using FastAlphaCalculator.
 
 } // namespace
 } // namespace PeakEwma

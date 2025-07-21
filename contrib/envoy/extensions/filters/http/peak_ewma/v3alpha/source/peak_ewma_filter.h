@@ -13,14 +13,8 @@ namespace PeakEwma {
 
 class PeakEwmaRttFilter : public Http::PassThroughFilter {
 public:
-  // Override decode headers to start timing
-  Http::FilterHeadersStatus decodeHeaders(Http::RequestHeaderMap& headers, bool end_stream) override;
-  
   // Override encode headers to capture RTT
   Http::FilterHeadersStatus encodeHeaders(Http::ResponseHeaderMap& headers, bool end_stream) override;
-
-private:
-  MonotonicTime request_start_time_;
 };
 
 } // namespace PeakEwma
