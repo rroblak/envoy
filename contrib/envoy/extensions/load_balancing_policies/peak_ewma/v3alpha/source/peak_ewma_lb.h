@@ -208,11 +208,12 @@ private:
 
   // Timer-based aggregation methods (Phase 4)
   void aggregateWorkerData();
+  void processCollectedData(std::shared_ptr<std::vector<std::vector<std::pair<Upstream::HostConstSharedPtr, RttSample>>*>> collected_buffers);
   void onAggregationTimer();
   void startAggregationTimer();
 
   // Hybrid EWMA snapshot methods
-  double getEwmaFromSnapshot(std::shared_ptr<HostEwmaSnapshot> snapshot, Upstream::HostConstSharedPtr host);
+  static double getEwmaFromSnapshot(std::shared_ptr<HostEwmaSnapshot> snapshot, Upstream::HostConstSharedPtr host);
 
   const Upstream::ClusterInfo& cluster_info_;
   TimeSource& time_source_;

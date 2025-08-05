@@ -185,6 +185,17 @@ PeakEwmaLoadBalancer::PeakEwmaLoadBalancer(
 }
 
 PeakEwmaLoadBalancer::~PeakEwmaLoadBalancer() {
+  // Post timer cancellation to main thread to avoid cross-thread timer operations
+  // Timer must be disabled from the same thread that created it (main_dispatcher_)
+  if (aggregation_timer_) {
+    main_dispatcher_.post([timer = std::move(aggregation_timer_)]() mutable {
+      if (timer) {
+        timer->disableTimer();
+        timer.reset();
+      }
+    });
+  }
+  
   // EWMA snapshot cleanup is automatic via shared_ptr destructor
   
   // Explicitly clear GlobalHostStats from all hosts to ensure stats are cleaned up
@@ -313,92 +324,112 @@ PerThreadData& PeakEwmaLoadBalancer::getThreadLocalData() {
 }
 
 void PeakEwmaLoadBalancer::aggregateWorkerData() {
-  // This method runs on the main thread and collects RTT samples from all worker threads
-
-  // Collect raw buffer pointers from workers - simplified single buffer approach
+  // Phase 1: Fast async collection from workers (minimal callback)
   auto collected_buffers = std::make_shared<std::vector<std::vector<std::pair<Upstream::HostConstSharedPtr, RttSample>>*>>();
   auto mutex = std::make_shared<absl::Mutex>();
-
-  // Simplified worker callback - minimal disruption
-  tls_slot_.runOnAllThreads([collected_buffers, mutex](OptRef<PerThreadData> obj) -> void {
-    if (!obj.has_value()) {
-      return;
-    }
-    
-    // Simple single buffer swap - fast operation with minimal worker disruption
-    auto* old_buffer = obj->swapAndClearBuffer();
-    
-    // Only collect if buffer has data
-    if (!old_buffer->empty()) {
-      absl::MutexLock lock(mutex.get());
-      collected_buffers->emplace_back(old_buffer);
-    }
-  }, [this, collected_buffers]() -> void {
-    // K-way merge optimization: process chronologically ordered samples directly from worker buffers
-    uint64_t computation_timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(
-        time_source_.monotonicTime().time_since_epoch()).count();
-    auto new_snapshot = std::make_shared<HostEwmaSnapshot>(10.0, computation_timestamp);
-    auto current_snapshot = std::atomic_load(&current_ewma_snapshot_);
-    
-    // Per-host EWMA state - updated incrementally during k-way merge
-    absl::flat_hash_map<Upstream::HostConstSharedPtr, double> host_ewma;
-    absl::flat_hash_map<Upstream::HostConstSharedPtr, uint64_t> host_last_timestamp;
-    
-    // Simple iterators for each worker buffer (already chronologically sorted)
-    std::vector<std::vector<std::pair<Upstream::HostConstSharedPtr, RttSample>>::const_iterator> iterators;
-    for (auto* buffer : *collected_buffers) {
-      iterators.push_back(buffer->begin());
-    }
-    
-    // K-way merge: process samples in chronological order across all worker buffers
-    while (true) {
-      // Find buffer with earliest timestamp
-      size_t min_buffer = SIZE_MAX;
-      uint64_t min_timestamp = UINT64_MAX;
+  std::atomic<bool> collection_complete{false};
+  
+  tls_slot_.runOnAllThreads(
+    [collected_buffers, mutex](OptRef<PerThreadData> obj) -> void {
+      if (!obj.has_value()) {
+        return;
+      }
       
-      for (size_t i = 0; i < collected_buffers->size(); ++i) {
-        if (iterators[i] != (*collected_buffers)[i]->end()) {
-          if (iterators[i]->second.timestamp_ns < min_timestamp) {
-            min_timestamp = iterators[i]->second.timestamp_ns;
-            min_buffer = i;
-          }
+      // Fast: just collect buffer pointers, no processing
+      auto* old_buffer = obj->swapAndClearBuffer();
+      
+      // Only collect if buffer has data
+      if (!old_buffer->empty()) {
+        absl::MutexLock lock(mutex.get());
+        collected_buffers->emplace_back(old_buffer);
+      }
+    },
+    [&collection_complete]() -> void {
+      // Minimal completion callback - just signal done
+      // NO MEMBER VARIABLE CAPTURES - eliminates use-after-free
+      collection_complete.store(true);
+    }
+  );
+  
+  // Phase 2: Wait for collection (spin wait is fine for short operations)
+  while (!collection_complete.load()) {
+    std::this_thread::yield();
+  }
+  
+  // Phase 3: Process data synchronously (object guaranteed valid)
+  processCollectedData(collected_buffers);
+  
+  // Reschedule timer - object guaranteed valid since we're running synchronously
+  if (aggregation_timer_) {
+    aggregation_timer_->enableTimer(aggregation_interval_);
+  }
+}
+
+void PeakEwmaLoadBalancer::processCollectedData(
+    std::shared_ptr<std::vector<std::vector<std::pair<Upstream::HostConstSharedPtr, RttSample>>*>> collected_buffers) {
+  // This runs synchronously, so all member variable access is safe
+  
+  // Load current snapshot and create new one  
+  auto current_snapshot = std::atomic_load(&current_ewma_snapshot_);
+  uint64_t computation_timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      time_source_.monotonicTime().time_since_epoch()).count();
+  auto new_snapshot = std::make_shared<HostEwmaSnapshot>(10.0, computation_timestamp);
+  
+  // Per-host EWMA state - updated incrementally during k-way merge
+  absl::flat_hash_map<Upstream::HostConstSharedPtr, double> host_ewma;
+  absl::flat_hash_map<Upstream::HostConstSharedPtr, uint64_t> host_last_timestamp;
+  
+  // Simple iterators for each worker buffer (already chronologically sorted)
+  std::vector<std::vector<std::pair<Upstream::HostConstSharedPtr, RttSample>>::const_iterator> iterators;
+  for (auto* buffer : *collected_buffers) {
+    iterators.push_back(buffer->begin());
+  }
+  
+  // K-way merge: process samples in chronological order across all worker buffers
+  while (true) {
+    // Find buffer with earliest timestamp
+    size_t min_buffer = SIZE_MAX;
+    uint64_t min_timestamp = UINT64_MAX;
+    
+    for (size_t i = 0; i < collected_buffers->size(); ++i) {
+      if (iterators[i] != (*collected_buffers)[i]->end()) {
+        if (iterators[i]->second.timestamp_ns < min_timestamp) {
+          min_timestamp = iterators[i]->second.timestamp_ns;
+          min_buffer = i;
         }
       }
-      
-      if (min_buffer == SIZE_MAX) break; // All buffers exhausted
-      
-      // Process the earliest sample
-      const auto& [host, sample] = *iterators[min_buffer];
-      
-      // Initialize or update host EWMA state
-      auto [ewma_iter, inserted] = host_ewma.try_emplace(host, getEwmaFromSnapshot(current_snapshot, host));
-      if (inserted && current_snapshot) {
-        host_last_timestamp[host] = current_snapshot->computation_timestamp_ns;
-      }
-      
-      // Update EWMA for this host incrementally
-      int64_t time_delta = static_cast<int64_t>(sample.timestamp_ns) - static_cast<int64_t>(host_last_timestamp[host]);
-      if (time_delta > 0) {
-        double alpha = FastAlphaCalculator::timeGapToAlpha(time_delta, tau_nanos_);
-        ewma_iter->second = ewma_iter->second + alpha * (sample.rtt_ms - ewma_iter->second);
-        host_last_timestamp[host] = sample.timestamp_ns;
-      }
-      
-      // Advance the iterator for this buffer
-      ++iterators[min_buffer];
     }
     
-    // Publish final EWMA snapshot to all workers using C++11 atomic operations
-    new_snapshot->ewma_values = std::move(host_ewma);
-    std::atomic_store(&current_ewma_snapshot_, new_snapshot);
-    // Old snapshot automatically cleaned up via shared_ptr destructor
+    if (min_buffer == SIZE_MAX) break; // All buffers exhausted
     
-    // Publish stats for admin interface visibility (after snapshot is live)
-    stats_publisher_.publishHostStats(new_snapshot, all_host_stats_);
+    // Process the earliest sample
+    const auto& [host, sample] = *iterators[min_buffer];
     
-    // Reschedule timer after aggregation is completely finished
-    this->aggregation_timer_->enableTimer(aggregation_interval_);
-  });
+    // Initialize or update host EWMA state
+    auto [ewma_iter, inserted] = host_ewma.try_emplace(host, getEwmaFromSnapshot(current_snapshot, host));
+    if (inserted && current_snapshot) {
+      host_last_timestamp[host] = current_snapshot->computation_timestamp_ns;
+    }
+    
+    // Update EWMA for this host incrementally
+    int64_t time_delta = static_cast<int64_t>(sample.timestamp_ns) - static_cast<int64_t>(host_last_timestamp[host]);
+    if (time_delta > 0) {
+      double alpha = FastAlphaCalculator::timeGapToAlpha(time_delta, tau_nanos_);
+      ewma_iter->second = ewma_iter->second + alpha * (sample.rtt_ms - ewma_iter->second);
+      host_last_timestamp[host] = sample.timestamp_ns;
+    }
+    
+    // Advance the iterator for this buffer
+    ++iterators[min_buffer];
+  }
+  
+  // Publish final EWMA snapshot to all workers using C++11 atomic operations
+  new_snapshot->ewma_values = std::move(host_ewma);
+  std::atomic_store(&current_ewma_snapshot_, new_snapshot);
+  // Old snapshot automatically cleaned up via shared_ptr destructor
+  
+  // Publish stats for admin interface visibility (safe since we're synchronous)
+  stats_publisher_.publishHostStats(new_snapshot, all_host_stats_);
 }
 
 
@@ -410,6 +441,7 @@ void PeakEwmaLoadBalancer::startAggregationTimer() {
   
   // Start the timer with the configured interval
   aggregation_timer_->enableTimer(aggregation_interval_);
+  aggregation_timer_started_ = true;
 }
 
 void PeakEwmaLoadBalancer::onAggregationTimer() {
