@@ -38,6 +38,8 @@ class PeakEwmaTestPeer;
 
 class PeakEwmaLoadBalancerFactory;
 class PeakEwmaLoadBalancer;
+class CostCalculator;
+struct GlobalHostStats;
 
 // Snapshot of EWMA values for all hosts, published atomically to workers
 struct HostEwmaSnapshot {
@@ -49,6 +51,26 @@ struct HostEwmaSnapshot {
       : computation_timestamp_ns(timestamp_ns), default_ewma_ms(default_ewma_ms) {}
 };
 
+
+// Stats publisher for admin interface visibility
+class StatsPublisher {
+public:
+  StatsPublisher(Stats::Scope& scope, TimeSource& time_source, const CostCalculator& cost_calculator, double default_rtt_ms)
+      : scope_(scope), time_source_(time_source), cost_calculator_(cost_calculator), default_rtt_ms_(default_rtt_ms) {}
+  
+  // Publish all per-host stats: EWMA, active requests, and costs
+  void publishHostStats(std::shared_ptr<HostEwmaSnapshot> snapshot, 
+                       std::unordered_map<Upstream::HostConstSharedPtr, std::unique_ptr<GlobalHostStats>>& all_host_stats);
+
+private:
+  Stats::Scope& scope_;
+  TimeSource& time_source_;
+  const CostCalculator& cost_calculator_;
+  double default_rtt_ms_;
+  
+  // Create host stats if they don't exist
+  std::unique_ptr<GlobalHostStats> createHostStats(Upstream::HostConstSharedPtr host);
+};
 
 // Simplified host statistics for RTT collection interface
 struct GlobalHostStats : public Upstream::HostLbPolicyData {
@@ -62,12 +84,16 @@ public:
   // Set the load balancer reference for thread-local recording
   void setLoadBalancer(PeakEwmaLoadBalancer* lb) { load_balancer_ = lb; }
   
-  // For observability
+  // For observability - publish all three stats
   void setComputedCostStat(double cost);
+  void setEwmaRttStat(double ewma_rtt_ms);
+  void setActiveRequestsStat(double active_requests);
 
 private:
   TimeSource& time_source_;
   Stats::Gauge& cost_stat_;
+  Stats::Gauge& ewma_rtt_stat_;
+  Stats::Gauge& active_requests_stat_;
   Upstream::HostConstSharedPtr host_;
   PeakEwmaLoadBalancer* load_balancer_{nullptr};
 };
@@ -166,6 +192,7 @@ private:
   // Pure business logic helpers
   CostCalculator cost_calculator_;
   PowerOfTwoSelector p2c_selector_;
+  StatsPublisher stats_publisher_;
 
   Upstream::HostConstSharedPtr selectFromTwoCandidates(
       const Upstream::HostVector& hosts, uint64_t random_value);
@@ -185,7 +212,7 @@ private:
   void startAggregationTimer();
 
   // Hybrid EWMA snapshot methods
-  double getEwmaFromSnapshot(const HostEwmaSnapshot* snapshot, Upstream::HostConstSharedPtr host);
+  double getEwmaFromSnapshot(std::shared_ptr<HostEwmaSnapshot> snapshot, Upstream::HostConstSharedPtr host);
 
   const Upstream::ClusterInfo& cluster_info_;
   TimeSource& time_source_;
@@ -207,11 +234,14 @@ private:
   static constexpr uint32_t kTimeCacheUpdates = 16;
   
 public:
-  // Hybrid EWMA pre-computation: atomic snapshot for race-free worker access  
-  // Public for testing
-  std::atomic<HostEwmaSnapshot*> current_ewma_snapshot_;
+  // Hybrid EWMA pre-computation: atomic shared_ptr for race-free worker access  
+  // Public for testing - using C++11 compatible free functions
+  std::shared_ptr<HostEwmaSnapshot> current_ewma_snapshot_;
 
 private:
+  
+  // Host stats for admin interface visibility
+  std::unordered_map<Upstream::HostConstSharedPtr, std::unique_ptr<GlobalHostStats>> all_host_stats_;
   
   // Timer state tracking to prevent redundant starts/stops
   bool aggregation_timer_started_{false};

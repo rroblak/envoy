@@ -56,11 +56,25 @@ GlobalHostStats::GlobalHostStats(Upstream::HostConstSharedPtr host, Stats::Scope
     : time_source_(time_source),
       cost_stat_(scope.gaugeFromString(
           "peak_ewma." + host->address()->asString() + ".cost",
-          Stats::Gauge::ImportMode::Accumulate)),
+          Stats::Gauge::ImportMode::NeverImport)),
+      ewma_rtt_stat_(scope.gaugeFromString(
+          "peak_ewma." + host->address()->asString() + ".ewma_rtt_ms",
+          Stats::Gauge::ImportMode::NeverImport)),
+      active_requests_stat_(scope.gaugeFromString(
+          "peak_ewma." + host->address()->asString() + ".active_requests",
+          Stats::Gauge::ImportMode::NeverImport)),
       host_(host) {}
 
 void GlobalHostStats::setComputedCostStat(double cost) {
   cost_stat_.set(static_cast<uint64_t>(cost));
+}
+
+void GlobalHostStats::setEwmaRttStat(double ewma_rtt_ms) {
+  ewma_rtt_stat_.set(static_cast<uint64_t>(ewma_rtt_ms));
+}
+
+void GlobalHostStats::setActiveRequestsStat(double active_requests) {
+  active_requests_stat_.set(static_cast<uint64_t>(active_requests));
 }
 
 void GlobalHostStats::recordRttSample(std::chrono::milliseconds rtt) {
@@ -72,6 +86,32 @@ void GlobalHostStats::recordRttSample(std::chrono::milliseconds rtt) {
     auto& thread_data = load_balancer_->getThreadLocalData();
     thread_data.recordRttSample(host_, rtt, timestamp_ns);
   }
+}
+
+// StatsPublisher implementation
+void StatsPublisher::publishHostStats(std::shared_ptr<HostEwmaSnapshot> snapshot, 
+                                     std::unordered_map<Upstream::HostConstSharedPtr, std::unique_ptr<GlobalHostStats>>& all_host_stats) {
+  // Publish stats for all hosts that have EWMA data
+  for (const auto& [host, rtt_ewma] : snapshot->ewma_values) {
+    // Create host stats if they don't exist
+    if (all_host_stats.find(host) == all_host_stats.end()) {
+      all_host_stats[host] = createHostStats(host);
+    }
+    
+    // Get current values
+    const double active_requests = static_cast<double>(host->stats().rq_active_.value());
+    const double computed_cost = cost_calculator_.calculateCost(rtt_ewma, active_requests, default_rtt_ms_);
+    
+    // Publish all three stats
+    auto& host_stats = all_host_stats[host];
+    host_stats->setEwmaRttStat(rtt_ewma);
+    host_stats->setActiveRequestsStat(active_requests);
+    host_stats->setComputedCostStat(computed_cost);
+  }
+}
+
+std::unique_ptr<GlobalHostStats> StatsPublisher::createHostStats(Upstream::HostConstSharedPtr host) {
+  return std::make_unique<GlobalHostStats>(host, scope_, time_source_);
 }
 
 // PerThreadData implementation  
@@ -116,6 +156,9 @@ PeakEwmaLoadBalancer::PeakEwmaLoadBalancer(
     Event::Dispatcher& main_dispatcher, ThreadLocal::TypedSlot<PerThreadData>& tls_slot)
     : ZoneAwareLoadBalancerBase(priority_set, local_priority_set, stats, runtime, random,
                                 healthy_panic_threshold, absl::nullopt),
+      cost_calculator_(),
+      p2c_selector_(),
+      stats_publisher_(cluster_info.statsScope(), time_source, cost_calculator_, 10.0),
       cluster_info_(cluster_info),
       time_source_(time_source),
       config_proto_(config),
@@ -133,16 +176,16 @@ PeakEwmaLoadBalancer::PeakEwmaLoadBalancer(
         return absl::OkStatus();
       });
   
-  // Initialize EWMA snapshot with default values
+  // Initialize EWMA snapshot with default values using C++11 atomic operations
   uint64_t current_time_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
       time_source_.monotonicTime().time_since_epoch()).count();
   double default_ewma_ms = 10.0;  // 10ms default RTT
-  current_ewma_snapshot_.store(new HostEwmaSnapshot(default_ewma_ms, current_time_ns));
+  std::atomic_store(&current_ewma_snapshot_, 
+                    std::make_shared<HostEwmaSnapshot>(default_ewma_ms, current_time_ns));
 }
 
 PeakEwmaLoadBalancer::~PeakEwmaLoadBalancer() {
-  // Clean up EWMA snapshot
-  delete current_ewma_snapshot_.load();
+  // EWMA snapshot cleanup is automatic via shared_ptr destructor
   
   // Explicitly clear GlobalHostStats from all hosts to ensure stats are cleaned up
   // before the ThreadLocalStoreImpl destructor runs
@@ -173,8 +216,14 @@ void PeakEwmaLoadBalancer::onHostSetUpdate(
 
 double PeakEwmaLoadBalancer::calculateHostCost(
     Upstream::HostConstSharedPtr host) {
-  // Use snapshot-based EWMA reading (race-free!)
-  const HostEwmaSnapshot* ewma_snapshot = current_ewma_snapshot_.load();
+  // Race-free EWMA snapshot reading using C++11 atomic shared_ptr operations
+  auto ewma_snapshot = std::atomic_load(&current_ewma_snapshot_);
+  if (!ewma_snapshot) {
+    // Fallback if no snapshot available yet
+    return cost_calculator_.calculateCost(10.0, static_cast<double>(host->stats().rq_active_.value()), 10.0);
+  }
+  
+  // No manual reference counting needed - shared_ptr keeps snapshot alive automatically
   const double rtt_ewma = getEwmaFromSnapshot(ewma_snapshot, host);
   
   // Use the standard host active request counter (real-time)
@@ -288,8 +337,8 @@ void PeakEwmaLoadBalancer::aggregateWorkerData() {
     // K-way merge optimization: process chronologically ordered samples directly from worker buffers
     uint64_t computation_timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(
         time_source_.monotonicTime().time_since_epoch()).count();
-    auto new_snapshot = new HostEwmaSnapshot(10.0, computation_timestamp);
-    const HostEwmaSnapshot* current_snapshot = current_ewma_snapshot_.load();
+    auto new_snapshot = std::make_shared<HostEwmaSnapshot>(10.0, computation_timestamp);
+    auto current_snapshot = std::atomic_load(&current_ewma_snapshot_);
     
     // Per-host EWMA state - updated incrementally during k-way merge
     absl::flat_hash_map<Upstream::HostConstSharedPtr, double> host_ewma;
@@ -323,7 +372,7 @@ void PeakEwmaLoadBalancer::aggregateWorkerData() {
       
       // Initialize or update host EWMA state
       auto [ewma_iter, inserted] = host_ewma.try_emplace(host, getEwmaFromSnapshot(current_snapshot, host));
-      if (inserted) {
+      if (inserted && current_snapshot) {
         host_last_timestamp[host] = current_snapshot->computation_timestamp_ns;
       }
       
@@ -339,10 +388,13 @@ void PeakEwmaLoadBalancer::aggregateWorkerData() {
       ++iterators[min_buffer];
     }
     
-    // Publish final EWMA snapshot to all workers
+    // Publish final EWMA snapshot to all workers using C++11 atomic operations
     new_snapshot->ewma_values = std::move(host_ewma);
-    const HostEwmaSnapshot* old_snapshot = current_ewma_snapshot_.exchange(new_snapshot);
-    delete old_snapshot;
+    std::atomic_store(&current_ewma_snapshot_, new_snapshot);
+    // Old snapshot automatically cleaned up via shared_ptr destructor
+    
+    // Publish stats for admin interface visibility (after snapshot is live)
+    stats_publisher_.publishHostStats(new_snapshot, all_host_stats_);
     
     // Reschedule timer after aggregation is completely finished
     this->aggregation_timer_->enableTimer(aggregation_interval_);
@@ -365,7 +417,7 @@ void PeakEwmaLoadBalancer::onAggregationTimer() {
   aggregateWorkerData();
 }
 
-double PeakEwmaLoadBalancer::getEwmaFromSnapshot(const HostEwmaSnapshot* snapshot, Upstream::HostConstSharedPtr host) {
+double PeakEwmaLoadBalancer::getEwmaFromSnapshot(std::shared_ptr<HostEwmaSnapshot> snapshot, Upstream::HostConstSharedPtr host) {
   auto it = snapshot->ewma_values.find(host);
   return (it != snapshot->ewma_values.end()) ? it->second : snapshot->default_ewma_ms;
 }
