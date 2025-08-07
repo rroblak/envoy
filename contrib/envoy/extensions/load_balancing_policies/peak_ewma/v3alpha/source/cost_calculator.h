@@ -1,0 +1,72 @@
+#pragma once
+
+#include "envoy/upstream/upstream.h"
+
+#include <cstdint>
+#include <utility>
+
+namespace Envoy {
+namespace Extensions {
+namespace LoadBalancingPolicies {
+namespace PeakEwma {
+
+/**
+ * Pure business logic for calculating host selection cost.
+ * This class has zero dependencies and is easily unit testable.
+ */
+class CostCalculator {
+public:
+  // High penalty for hosts with requests but no RTT data (likely failing)
+  static constexpr double kPenaltyValue = 1000000.0;
+  
+  /**
+   * Calculate cost for host selection using Peak EWMA algorithm.
+   * Formula: cost = rtt_ewma * (active_requests + 1)
+   * 
+   * @param rtt_ewma_ms EWMA RTT in milliseconds (0.0 if no data available)
+   * @param active_requests Current active request count
+   * @param default_rtt_ms Default RTT to use when no EWMA data available
+   * @return Computed cost for P2C selection (lower is better)
+   */
+  double calculateCost(double rtt_ewma_ms, double active_requests, double default_rtt_ms) const;
+};
+
+/**
+ * Power of Two Choices (P2C) host selection algorithm.
+ * Selects the better host between two random candidates.
+ */
+class PowerOfTwoSelector {
+public:
+  // Mask for tie-breaking using random bits
+  static constexpr uint64_t kTieBreakingMask = 0x1;
+  
+  /**
+   * Select the better host between two candidates.
+   * 
+   * @param first_host First candidate host
+   * @param first_cost Cost of first host
+   * @param second_host Second candidate host  
+   * @param second_cost Cost of second host
+   * @param random_value Random value for tie-breaking
+   * @return Selected host (lower cost wins, random tie-breaking)
+   */
+  Upstream::HostConstSharedPtr selectBest(
+      Upstream::HostConstSharedPtr first_host, double first_cost,
+      Upstream::HostConstSharedPtr second_host, double second_cost,
+      uint64_t random_value) const;
+  
+  /**
+   * Generate two distinct indices for P2C selection.
+   * 
+   * @param host_count Total number of hosts
+   * @param random_value Random value for index generation
+   * @return Pair of distinct indices
+   */
+  std::pair<size_t, size_t> generateTwoDistinctIndices(
+      size_t host_count, uint64_t random_value) const;
+};
+
+} // namespace PeakEwma
+} // namespace LoadBalancingPolicies
+} // namespace Extensions
+} // namespace Envoy

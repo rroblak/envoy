@@ -6,19 +6,21 @@ namespace LoadBalancingPolicies {
 namespace PeakEwma {
 
 Upstream::LoadBalancerPtr PeakEwmaCreator::operator()(
-    Upstream::LoadBalancerParams params, OptRef<const Upstream::LoadBalancerConfig> lb_config,
-    const Upstream::ClusterInfo& cluster_info, const Upstream::PrioritySet&,
-    Runtime::Loader& runtime, Random::RandomGenerator& random, TimeSource& time_source) {
-
-  const auto* typed_lb_config = dynamic_cast<const PeakEwmaLbConfig*>(lb_config.ptr());
-  ASSERT(typed_lb_config != nullptr, "Invalid load balancer config");
+    Upstream::LoadBalancerParams /* params */, OptRef<const Upstream::LoadBalancerConfig> lb_config,
+    const Upstream::ClusterInfo& cluster_info, const Upstream::PrioritySet& priority_set,
+    Runtime::Loader& runtime, Envoy::Random::RandomGenerator& random, TimeSource& time_source) {
+  
+  const auto* config = dynamic_cast<const TypedPeakEwmaLbConfig*>(lb_config.ptr());
+  if (config == nullptr) {
+    ENVOY_LOG(error, "Peak EWMA load balancer config is required");
+    return nullptr;
+  }
 
   return std::make_unique<PeakEwmaLoadBalancer>(
-      params.priority_set, params.local_priority_set, cluster_info.lbStats(), runtime, random,
-      PROTOBUF_PERCENT_TO_ROUNDED_INTEGER_OR_DEFAULT(cluster_info.lbConfig(),
-                                                     healthy_panic_threshold, 100, 50),
-      cluster_info, time_source, typed_lb_config->proto_config_, 
-      typed_lb_config->main_dispatcher_, *typed_lb_config->tls_slot_);
+      priority_set, nullptr, cluster_info.lbStats(), runtime, random,
+      50, // healthy_panic_threshold
+      cluster_info, time_source, config->lb_config_, 
+      config->main_dispatcher_);
 }
 
 /**
