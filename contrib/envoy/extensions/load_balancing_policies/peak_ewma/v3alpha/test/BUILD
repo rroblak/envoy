@@ -63,3 +63,37 @@ envoy_cc_test(
         "//test/mocks/upstream:upstream_mocks",
     ],
 )
+
+envoy_cc_test(
+    name = "host_data_test",
+    srcs = ["host_data_test.cc"],
+    deps = [
+        "//contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/source:peak_ewma_lb_lib",
+    ],
+)
+
+envoy_cc_test(
+    name = "observability_test",
+    srcs = ["observability_test.cc"],
+    deps = [
+        "//contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/source:peak_ewma_lb_lib",
+        "//source/common/network:address_lib",
+        "//test/common/stats:stat_test_utility_lib",
+        "//test/mocks:common_lib",
+        "//test/mocks/upstream:upstream_mocks",
+    ],
+)
+
+envoy_cc_test(
+    name = "peak_ewma_lb_comprehensive_test",
+    srcs = ["peak_ewma_lb_comprehensive_test.cc"],
+    deps = [
+        "//contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/source:peak_ewma_lb_lib",
+        "//source/common/network:address_lib",
+        "//test/common/stats:stat_test_utility_lib",
+        "//test/mocks:common_lib",
+        "//test/mocks/event:event_mocks",
+        "//test/mocks/runtime:runtime_mocks",
+        "//test/mocks/upstream:upstream_mocks",
+    ],
+)
