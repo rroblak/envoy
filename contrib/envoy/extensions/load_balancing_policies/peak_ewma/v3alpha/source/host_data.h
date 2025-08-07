@@ -12,9 +12,10 @@ namespace LoadBalancingPolicies {
 namespace PeakEwma {
 
 /**
- * Host-attached atomic ring buffer for RTT samples (like CSWRR's ClientSideHostLbPolicyData).
- * This approach eliminates all race conditions by storing data directly in Host objects
- * using atomic variables for thread-safe access.
+ * Host-attached atomic ring buffer for RTT samples.
+ * 
+ * Stores RTT samples and EWMA state directly in Host objects using atomic variables
+ * for thread-safe access. Workers write samples, main thread processes them.
  */
 struct PeakEwmaHostLbPolicyData : public Upstream::HostLbPolicyData {
   static constexpr size_t kMaxSamples = 100;  // ~1.6KB per host

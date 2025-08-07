@@ -21,9 +21,7 @@ namespace Extensions {
 namespace LoadBalancingPolicies {
 namespace PeakEwma {
 
-// Host-attached atomic ring buffer implementation
-
-// Implementation uses separate files for better organization
+// Peak EWMA Load Balancer Implementation
 
 
 
@@ -53,12 +51,12 @@ PeakEwmaLoadBalancer::PeakEwmaLoadBalancer(
           DurationUtil::durationToMilliseconds(config_proto_.decay_time()) * 1000000LL :
           kDefaultDecayTimeSeconds * 1000000000LL) {
   
-  // Add PeakEwmaHostLbPolicyData to all existing hosts (like CSWRR pattern)
+  // Add PeakEwmaHostLbPolicyData to all existing hosts
   for (const auto& host_set : priority_set_.hostSetsPerPriority()) {
     addPeakEwmaLbPolicyDataToHosts(host_set->hosts());
   }
   
-  // Setup callback to add data to new hosts (like CSWRR)
+  // Setup callback to add data to new hosts
   priority_update_cb_ = priority_set_.addPriorityUpdateCb(
       [this](uint32_t, const Upstream::HostVector& hosts_added, const Upstream::HostVector&) -> absl::Status {
         addPeakEwmaLbPolicyDataToHosts(hosts_added);
@@ -71,10 +69,7 @@ PeakEwmaLoadBalancer::PeakEwmaLoadBalancer(
   });
   aggregation_timer_->enableTimer(aggregation_interval_);
   
-  printf("PEAK EWMA: Host-attached atomic ring buffer load balancer initialized\n");
-  printf("PEAK EWMA: tau=%.1fs, aggregation_interval=%lldms\n", 
-         tau_nanos_ / 1000000000.0, static_cast<long long>(aggregation_interval_.count()));
-  fflush(stdout);
+  // Peak EWMA load balancer initialized successfully
 }
 
 PeakEwmaLoadBalancer::~PeakEwmaLoadBalancer() {
@@ -99,12 +94,10 @@ PeakEwmaLoadBalancer::~PeakEwmaLoadBalancer() {
   }
 }
 
-// Host management following CSWRR pattern
+// Host management
 void PeakEwmaLoadBalancer::addPeakEwmaLbPolicyDataToHosts(const Upstream::HostVector& hosts) {
   for (const auto& host_ptr : hosts) {
     if (!host_ptr->lbPolicyData().has_value()) {
-      printf("PEAK EWMA: Adding atomic ring buffer data to host %s\n", 
-             host_ptr->address()->asString().c_str());
       host_ptr->setLbPolicyData(std::make_unique<PeakEwmaHostLbPolicyData>());
     }
   }
@@ -176,24 +169,13 @@ Upstream::HostConstSharedPtr PeakEwmaLoadBalancer::selectFromTwoCandidates(
   
   auto selected_host = prefer_first ? first_host : second_host;
   
-  // Debug logging for slow server selections  
-  bool slow_involved = (first_host->address()->asString().find(":19009") != std::string::npos) ||
-                      (second_host->address()->asString().find(":19009") != std::string::npos);
-  bool slow_selected = selected_host->address()->asString().find(":19009") != std::string::npos;
-  
-  if (slow_involved) {
-    printf("P2C_SELECTION: first=%s(%.3f) vs second=%s(%.3f) -> selected=%s%s\n",
-           first_host->address()->asString().c_str(), first_cost,
-           second_host->address()->asString().c_str(), second_cost,
-           selected_host->address()->asString().c_str(),
-           slow_selected ? " (SLOW)" : "");
-  }
+  // Host selection complete
   
   return selected_host;
 }
 
 Upstream::HostSelectionResponse PeakEwmaLoadBalancer::chooseHost(Upstream::LoadBalancerContext* /* context */) {
-  // Host-attached atomic approach: Direct P2C selection using EWMA data from hosts
+  // Power of Two Choices selection using host-attached EWMA data
   const auto& host_sets = priority_set_.hostSetsPerPriority();
   
   if (host_sets.empty()) {
@@ -224,9 +206,7 @@ PeakEwmaLoadBalancer::peekAnotherHost(ABSL_ATTRIBUTE_UNUSED Upstream::LoadBalanc
 
 
 void PeakEwmaLoadBalancer::aggregateWorkerData() {
-  // Host-attached atomic ring buffer approach (like CSWRR)
-  printf("AGGREGATION: Starting host-attached EWMA calculation\n");
-  fflush(stdout);
+  // Process atomic ring buffers attached to each host
   
   // Process each host's atomic ring buffer directly (no cross-thread complexity)
   for (const auto& host_set : priority_set_.hostSetsPerPriority()) {
@@ -264,20 +244,15 @@ void PeakEwmaLoadBalancer::aggregateWorkerData() {
           it->second->setComputedCostStat(cost);
         }
         
-        // Debug logging for slow server
-        if (host->address()->asString().find(":19009") != std::string::npos) {
-          printf("AGGREGATION: Slow server EWMA=%.3fms, cost=%.3f, active_req=%.0f\n", 
-                 ewma_rtt, cost, active_requests);
-        }
+        // Host processing complete
       }
     }
   }
   
-  printf("AGGREGATION: Host-attached aggregation complete\n");
-  fflush(stdout);
+  // Aggregation cycle complete
 }
 
-void PeakEwmaLoadBalancer::processHostSamples(Upstream::HostConstSharedPtr host, PeakEwmaHostLbPolicyData* data) {
+void PeakEwmaLoadBalancer::processHostSamples(Upstream::HostConstSharedPtr /* host */, PeakEwmaHostLbPolicyData* data) {
   if (!data) return;
   
   // Get the range of new samples to process (atomic ring buffer)
@@ -345,11 +320,7 @@ void PeakEwmaLoadBalancer::processHostSamples(Upstream::HostConstSharedPtr host,
   data->updateEwma(current_ewma, current_time_ns);
   data->markSamplesProcessed(current_write);
   
-  // Debug logging for slow server
-  if (host->address()->asString().find(":19009") != std::string::npos) {
-    printf("PROCESS_SAMPLES: Host=%s processed %zu samples, EWMA=%.3fms\n", 
-           host->address()->asString().c_str(), num_new_samples, current_ewma);
-  }
+  // Sample processing complete
 }
 
 

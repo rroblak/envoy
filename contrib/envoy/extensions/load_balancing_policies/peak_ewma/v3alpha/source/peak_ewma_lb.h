@@ -32,14 +32,9 @@ namespace PeakEwma {
 
 // Forward declarations and type aliases
 using Config = envoy::extensions::load_balancing_policies::peak_ewma::v3alpha::PeakEwma;
-class WorkerLocalLbFactory;
 
-constexpr size_t kCacheLineAlignment = 64;
 constexpr int64_t kDefaultDecayTimeSeconds = 10;
 constexpr double kDefaultRttMilliseconds = 10.0;  // Default RTT for new hosts (10ms)
-constexpr int kPrefetchHighLocality = 3;
-constexpr int kPrefetchReadHint = 0;
-
 
 namespace {
 class PeakEwmaTestPeer;
@@ -50,17 +45,6 @@ class PeakEwmaLoadBalancer;
 class CostCalculator;
 struct GlobalHostStats;
 
-// Snapshot of EWMA values for all hosts, published atomically to workers
-struct HostEwmaSnapshot {
-  absl::flat_hash_map<Upstream::HostConstSharedPtr, double> ewma_values;
-  uint64_t computation_timestamp_ns;
-  uint64_t sequence_number; // Debugging: Track snapshot ordering in ThreadAware architecture
-  double default_ewma_ms; // Fallback for hosts not in snapshot
-  
-  HostEwmaSnapshot(double default_ewma_ms, uint64_t timestamp_ns, uint64_t sequence)
-      : computation_timestamp_ns(timestamp_ns), sequence_number(sequence), default_ewma_ms(default_ewma_ms) {}
-};
-
 
 
 
@@ -70,9 +54,17 @@ struct HostEwmaSnapshot {
 
 
 /**
- * Peak EWMA Load Balancer with Host-Attached Atomic Storage.
- * Follows CSWRR pattern: stores data in Host objects, accessible from all threads.
- * Main thread processes samples, workers read EWMA values for P2C selection.
+ * Peak EWMA Load Balancer Implementation.
+ * 
+ * Uses host-attached atomic ring buffers for RTT sample storage. Worker threads
+ * record RTT samples directly into host objects. Main thread periodically processes
+ * these samples to update EWMA values. Load balancing uses Power of Two Choices
+ * algorithm with latency-aware cost function.
+ * 
+ * Architecture:
+ * - HTTP filter records RTT samples in host-attached ring buffers (lock-free)
+ * - Timer aggregates samples every 100ms and updates EWMA values
+ * - P2C selection uses current EWMA + active requests for cost calculation
  */
 class PeakEwmaLoadBalancer : public Upstream::LoadBalancerBase {
 public:
@@ -86,18 +78,18 @@ public:
 
   ~PeakEwmaLoadBalancer();
 
-  // LoadBalancer interface (direct implementation, no factory needed)
+  // LoadBalancer interface
   Upstream::HostSelectionResponse chooseHost(Upstream::LoadBalancerContext* context) override;
   Upstream::HostConstSharedPtr peekAnotherHost(Upstream::LoadBalancerContext* context) override;
 
 private:
   friend struct GlobalHostStats;
 
-  // Host management (following CSWRR pattern)  
+  // Host management - attach atomic data structures to each host
   void addPeakEwmaLbPolicyDataToHosts(const Upstream::HostVector& hosts);
   PeakEwmaHostLbPolicyData* getPeakEwmaData(Upstream::HostConstSharedPtr host);
   
-  // Timer-based aggregation (simplified - no cross-thread complexity)
+  // Timer-based aggregation - processes host-attached sample data
   void aggregateWorkerData();
   void processHostSamples(Upstream::HostConstSharedPtr host, PeakEwmaHostLbPolicyData* data);
   void onAggregationTimer();
@@ -116,7 +108,7 @@ private:
   CostCalculator cost_calculator_;
   StatsPublisher stats_publisher_;
   
-  // Timer infrastructure for EWMA updates  
+  // Timer infrastructure for periodic EWMA calculation
   Event::Dispatcher& main_dispatcher_;
   Event::TimerPtr aggregation_timer_;
   const std::chrono::milliseconds aggregation_interval_;
@@ -124,7 +116,7 @@ private:
   // Host stats for admin interface visibility
   std::unordered_map<Upstream::HostConstSharedPtr, std::unique_ptr<GlobalHostStats>> all_host_stats_;
   
-  // Priority set callback for adding data to new hosts (like CSWRR)
+  // Priority set callback for adding atomic data to new hosts
   Common::CallbackHandlePtr priority_update_cb_;
   
   // EWMA calculation constants
