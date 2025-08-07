@@ -172,14 +172,11 @@ TEST_F(PeakEwmaRttFilterTest, EncodeHeadersWithPeakEwmaStats) {
     return MonotonicTime(current_time);
   }));
   
-  // Create Peak EWMA stats with simplified constructor
-  auto stats = std::make_unique<LoadBalancingPolicies::PeakEwma::GlobalHostStats>(
-      std::static_pointer_cast<const Upstream::Host>(mock_host),
-      *scope,
-      time_system);
+  // Create Peak EWMA host data for the mock host
+  auto peak_data = std::make_unique<LoadBalancingPolicies::PeakEwma::PeakEwmaHostLbPolicyData>();
   
   // Set the LB policy data on the mock host
-  mock_host->setLbPolicyData(std::move(stats));
+  mock_host->setLbPolicyData(std::move(peak_data));
   
   // Start the request
   filter_->decodeHeaders(request_headers, false);

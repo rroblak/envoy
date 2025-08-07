@@ -104,7 +104,7 @@ TEST_F(PeakEwmaConfigTest, LoadConfigWithDefaults) {
   EXPECT_NE(result.value(), nullptr);
   
   // Verify the config holds the proto
-  const auto* config = dynamic_cast<const PeakEwmaLbConfig*>(result.value().get());
+  const auto* config = dynamic_cast<const TypedPeakEwmaLbConfig*>(result.value().get());
   EXPECT_NE(config, nullptr);
 }
 
@@ -119,9 +119,9 @@ TEST_F(PeakEwmaConfigTest, LoadConfigWithCustomValues) {
   auto result = factory.loadConfig(context, proto_config);
   EXPECT_TRUE(result.ok());
   
-  const auto* config = dynamic_cast<const PeakEwmaLbConfig*>(result.value().get());
+  const auto* config = dynamic_cast<const TypedPeakEwmaLbConfig*>(result.value().get());
   EXPECT_NE(config, nullptr);
-  EXPECT_EQ(config->proto_config_.decay_time().seconds(), 5);
+  EXPECT_EQ(config->lb_config_.decay_time().seconds(), 5);
 }
 
 TEST_F(PeakEwmaConfigTest, CreateThreadAwareLoadBalancer) {
@@ -168,8 +168,11 @@ TEST_F(PeakEwmaConfigTest, InvalidConfigType) {
   // Try to load a different proto type
   google::protobuf::Empty wrong_proto;
   
-  // In debug builds, this will trigger an assertion failure
-  EXPECT_DEATH({ auto result = factory.loadConfig(context, wrong_proto); (void)result; }, "assert failure");
+  // dynamic_cast will throw std::bad_cast for wrong proto type
+  EXPECT_THROW({
+    auto result = factory.loadConfig(context, wrong_proto);
+    (void)result;
+  }, std::bad_cast);
 }
 
 TEST_F(PeakEwmaConfigTest, CreateWithNullConfig) {
@@ -193,14 +196,14 @@ TEST_F(PeakEwmaConfigTest, ConfigValidation) {
   // Very small decay time
   proto_config.mutable_decay_time()->set_nanos(1000000);  // 1ms
   
-  PeakEwmaLbConfig config(proto_config, dispatcher_, tls_);
-  EXPECT_EQ(config.proto_config_.decay_time().nanos(), 1000000);
+  TypedPeakEwmaLbConfig config(proto_config, dispatcher_);
+  EXPECT_EQ(config.lb_config_.decay_time().nanos(), 1000000);
   
   // Very large decay time
   proto_config.mutable_decay_time()->set_seconds(300);
   
-  PeakEwmaLbConfig config2(proto_config, dispatcher_, tls_);
-  EXPECT_EQ(config2.proto_config_.decay_time().seconds(), 300);
+  TypedPeakEwmaLbConfig config2(proto_config, dispatcher_);
+  EXPECT_EQ(config2.lb_config_.decay_time().seconds(), 300);
 }
 
 TEST_F(PeakEwmaConfigTest, MultipleLoadBalancerInstances) {

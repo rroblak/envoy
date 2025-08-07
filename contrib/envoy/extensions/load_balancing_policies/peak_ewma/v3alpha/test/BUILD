@@ -47,8 +47,8 @@ envoy_cc_test(
 )
 
 envoy_cc_test(
-    name = "cost_calculator_test",
-    srcs = ["cost_calculator_test.cc"],
+    name = "cost_test",
+    srcs = ["cost_test.cc"],
     deps = [
         "//contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/source:peak_ewma_lb_lib",
     ],

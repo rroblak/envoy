@@ -21,24 +21,7 @@ namespace Extensions {
 namespace LoadBalancingPolicies {
 namespace PeakEwma {
 
-// Simple ThreadLocal mock for testing
-class MockThreadLocalInstance : public ThreadLocal::SlotAllocator {
-public:
-  ThreadLocal::SlotPtr allocateSlot() override {
-    return std::make_unique<MockSlot>();
-  }
-
-private:
-  class MockSlot : public ThreadLocal::Slot {
-  public:
-    bool currentThreadRegistered() override { return true; }
-    ThreadLocal::ThreadLocalObjectSharedPtr get() override { return nullptr; }
-    void set(InitializeCb) override {}
-    void runOnAllThreads(const UpdateCb&) override {}
-    void runOnAllThreads(const UpdateCb&, const std::function<void()>&) override {}
-    bool isShutdown() const override { return false; }
-  };
-};
+// Peak EWMA integration tests using simple LoadBalancerBase pattern
 
 class PeakEwmaLoadBalancerIntegrationTest : public ::testing::Test {
 public:
@@ -68,14 +51,9 @@ public:
     envoy::extensions::load_balancing_policies::peak_ewma::v3alpha::PeakEwma config;
     config.mutable_decay_time()->set_seconds(10);
 
-    tls_slot_ = ThreadLocal::TypedSlot<PerThreadData>::makeUnique(tls_);
-    tls_slot_->set([](Event::Dispatcher&) -> std::shared_ptr<PerThreadData> {
-      return std::make_shared<PerThreadData>();
-    });
-
     lb_ = std::make_unique<PeakEwmaLoadBalancer>(
         priority_set_, nullptr, stats_, runtime_, random_, 50,
-        *cluster_info_, time_source_, config, dispatcher_, *tls_slot_);
+        *cluster_info_, time_source_, config, dispatcher_);
   }
 
 protected:
@@ -90,8 +68,6 @@ protected:
   NiceMock<Random::MockRandomGenerator> random_;
   NiceMock<MockTimeSystem> time_source_;
   NiceMock<Event::MockDispatcher> dispatcher_;
-  MockThreadLocalInstance tls_;
-  std::unique_ptr<ThreadLocal::TypedSlot<PerThreadData>> tls_slot_;
 
   std::vector<Upstream::HostSharedPtr> hosts_;
   std::unique_ptr<PeakEwmaLoadBalancer> lb_;
