@@ -82,4 +82,20 @@ message PeakEwma {
   // If not specified, defaults to 25,000 samples per host per worker.
   google.protobuf.UInt32Value max_samples_per_host = 3;
 
+  // Default RTT value to use for hosts that don't have measured RTT yet.
+  // This provides a baseline for cost calculations until actual measurements are available.
+  //
+  // This value is critical for initial load balancing decisions when hosts first join
+  // the cluster or when RTT measurements are temporarily unavailable. It should reflect
+  // the expected baseline latency for your environment:
+  //
+  // Typical values:
+  // - 1ms: High-performance local networks, same-datacenter communication
+  // - 10ms: Regional networks, well-connected infrastructure (default)
+  // - 50ms: Cross-region networks, standard internet connectivity  
+  // - 100ms: High-latency or congested networks
+  //
+  // If not specified, defaults to 10 milliseconds.
+  google.protobuf.Duration default_rtt = 4;
+
 }

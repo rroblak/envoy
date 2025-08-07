@@ -58,15 +58,14 @@ inline double fastExp(double x) {
 class FastAlphaCalculator {
 public:
   static double timeGapToAlpha(int64_t time_gap_nanos, int64_t tau_nanos) {
-    // For very small time gaps, use a constant small alpha
-    if (time_gap_nanos <= 0) return 0.1;
+    // Handle edge cases
+    if (time_gap_nanos <= 0) return 0.0;
+    if (tau_nanos <= 0) return 1.0;
     
-    // For very large time gaps, alpha approaches 1.0
-    if (time_gap_nanos >= tau_nanos * 5) return 1.0;
-    
-    // Calculate alpha = 1 - exp(-time_gap / tau)
-    const double ratio = -static_cast<double>(time_gap_nanos) / tau_nanos;
-    return 1.0 - fastExp(ratio);
+    // Standard EWMA formula: alpha = 1 - exp(-time_gap / tau)
+    // Use standard library exp() for correctness
+    const double ratio = static_cast<double>(time_gap_nanos) / static_cast<double>(tau_nanos);
+    return 1.0 - std::exp(-ratio);
   }
 };
 
