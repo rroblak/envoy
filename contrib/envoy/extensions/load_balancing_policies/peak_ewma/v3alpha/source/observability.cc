@@ -1,4 +1,4 @@
-#include "contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/source/stats_publisher.h"
+#include "contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/source/observability.h"
 
 namespace Envoy {
 namespace Extensions {
@@ -29,11 +29,11 @@ void GlobalHostStats::setActiveRequestsStat(double active_requests) {
   active_requests_stat_.set(static_cast<uint64_t>(active_requests));
 }
 
-void StatsPublisher::publishHostStats(const std::unordered_map<Upstream::HostConstSharedPtr, std::unique_ptr<GlobalHostStats>>& /* all_host_stats */) {
+void Observability::report(const std::unordered_map<Upstream::HostConstSharedPtr, std::unique_ptr<GlobalHostStats>>& /* all_host_stats */) {
   // Stats are published during aggregation - this is a placeholder for consistency
 }
 
-std::unique_ptr<GlobalHostStats> StatsPublisher::createHostStats(Upstream::HostConstSharedPtr host) {
+std::unique_ptr<GlobalHostStats> Observability::createHostStats(Upstream::HostConstSharedPtr host) {
   return std::make_unique<GlobalHostStats>(host, scope_, time_source_);
 }
 

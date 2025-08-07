@@ -11,16 +11,16 @@ namespace LoadBalancingPolicies {
 namespace PeakEwma {
 
 /**
- * Pure business logic for calculating host selection cost.
- * This class has zero dependencies and is easily unit testable.
+ * Peak EWMA cost calculation for host selection.
+ * Encapsulates the cost function business logic with zero dependencies.
  */
-class CostCalculator {
+class Cost {
 public:
   // High penalty for hosts with requests but no RTT data (likely failing)
   static constexpr double kPenaltyValue = 1000000.0;
   
   /**
-   * Calculate cost for host selection using Peak EWMA algorithm.
+   * Compute cost for host selection using Peak EWMA algorithm.
    * Formula: cost = rtt_ewma * (active_requests + 1)
    * 
    * @param rtt_ewma_ms EWMA RTT in milliseconds (0.0 if no data available)
@@ -28,7 +28,7 @@ public:
    * @param default_rtt_ms Default RTT to use when no EWMA data available
    * @return Computed cost for P2C selection (lower is better)
    */
-  double calculateCost(double rtt_ewma_ms, double active_requests, double default_rtt_ms) const;
+  double compute(double rtt_ewma_ms, double active_requests, double default_rtt_ms) const;
 };
 
 /**

@@ -1,4 +1,4 @@
-#include "contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/source/cost_calculator.h"
+#include "contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/source/cost.h"
 
 #include "envoy/upstream/upstream.h"
 
@@ -10,7 +10,7 @@ namespace Extensions {
 namespace LoadBalancingPolicies {
 namespace PeakEwma {
 
-double CostCalculator::calculateCost(double rtt_ewma_ms, double active_requests, double default_rtt_ms) const {
+double Cost::compute(double rtt_ewma_ms, double active_requests, double default_rtt_ms) const {
   const bool has_rtt = (rtt_ewma_ms > 0.0);
   const bool has_requests = (active_requests > 0.0);
   
@@ -34,18 +34,7 @@ Upstream::HostConstSharedPtr PowerOfTwoSelector::selectBest(
   const bool prefer_first = costs_equal ? 
     (random_value & kTieBreakingMask) != 0 : first_cost < second_cost;
   
-  // DEBUG: Log unexpected selections where high cost wins
-  bool slow_involved = (first_host->address()->asString().find(":19009") != std::string::npos) ||
-                       (second_host->address()->asString().find(":19009") != std::string::npos);
-  bool slow_selected = prefer_first ? 
-    (first_host->address()->asString().find(":19009") != std::string::npos) :
-    (second_host->address()->asString().find(":19009") != std::string::npos);
-    
-  if (slow_involved && slow_selected) {
-    printf("SLOW SERVER SELECTED! Cost1=%.1f Cost2=%.1f Equal=%d PreferFirst=%d Random=0x%lx\n",
-           first_cost, second_cost, costs_equal, prefer_first, random_value);
-    fflush(stdout);
-  }
+  // Host selection complete
   
   return prefer_first ? first_host : second_host;
 }

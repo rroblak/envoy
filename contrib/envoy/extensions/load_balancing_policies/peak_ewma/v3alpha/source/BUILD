@@ -12,17 +12,17 @@ envoy_contrib_package()
 envoy_cc_library(
     name = "peak_ewma_lb_lib",
     srcs = [
-        "cost_calculator.cc",
+        "cost.cc",
         "host_data.cc",
         "peak_ewma_lb.cc",
-        "stats_publisher.cc",
+        "observability.cc",
     ],
     hdrs = [
-        "cost_calculator.h",
+        "cost.h",
         "ewma.h",
         "host_data.h",
         "peak_ewma_lb.h",
-        "stats_publisher.h",
+        "observability.h",
     ],
     repository = "@envoy",
     visibility = [

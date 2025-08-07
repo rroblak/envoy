@@ -1,7 +1,7 @@
 #include "contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/source/peak_ewma_lb.h"
 #include "contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/source/host_data.h"
-#include "contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/source/cost_calculator.h"
-#include "contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/source/stats_publisher.h"
+#include "contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/source/cost.h"
+#include "contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/source/observability.h"
 
 #include <limits>
 #include <memory>
@@ -38,8 +38,8 @@ PeakEwmaLoadBalancer::PeakEwmaLoadBalancer(
       priority_set_(priority_set),
       config_proto_(config),
       random_(random),
-      cost_calculator_(),
-      stats_publisher_(cluster_info.statsScope(), time_source, cost_calculator_, 
+      cost_(),
+      observability_(cluster_info.statsScope(), time_source, cost_, 
                       config.has_default_rtt() ?
                           DurationUtil::durationToMilliseconds(config.default_rtt()) :
                           kDefaultRttMilliseconds),
@@ -134,7 +134,7 @@ double PeakEwmaLoadBalancer::calculateHostCost(Upstream::HostConstSharedPtr host
       DurationUtil::durationToMilliseconds(config_proto_.default_rtt()) :
       kDefaultRttMilliseconds;
       
-  return cost_calculator_.calculateCost(ewma_rtt, active_requests, default_rtt_ms);
+  return cost_.compute(ewma_rtt, active_requests, default_rtt_ms);
 }
 
 
@@ -225,7 +225,7 @@ void PeakEwmaLoadBalancer::aggregateWorkerData() {
       if (peak_data) {
         double ewma_rtt = peak_data->getEwmaRtt();
         double active_requests = host->stats().rq_active_.value();
-        double cost = cost_calculator_.calculateCost(ewma_rtt, active_requests, 
+        double cost = cost_.compute(ewma_rtt, active_requests, 
                         config_proto_.has_default_rtt() ?
                             DurationUtil::durationToMilliseconds(config_proto_.default_rtt()) :
                             kDefaultRttMilliseconds);
@@ -233,7 +233,7 @@ void PeakEwmaLoadBalancer::aggregateWorkerData() {
         // Create stats object if it doesn't exist
         auto it = all_host_stats_.find(host);
         if (it == all_host_stats_.end()) {
-          all_host_stats_[host] = stats_publisher_.createHostStats(host);
+          all_host_stats_[host] = observability_.createHostStats(host);
           it = all_host_stats_.find(host);
         }
         

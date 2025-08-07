@@ -5,7 +5,7 @@
 #include "envoy/upstream/upstream.h"
 #include "envoy/common/time.h"
 
-#include "contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/source/cost_calculator.h"
+#include "contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/source/cost.h"
 
 #include <memory>
 #include <unordered_map>
@@ -34,21 +34,21 @@ private:
 };
 
 /**
- * Publishes Peak EWMA metrics to admin interface for observability.
+ * Peak EWMA observability and metrics reporting.
  * Creates per-host stats showing EWMA RTT, active requests, and computed costs.
  */
-class StatsPublisher {
+class Observability {
 public:
-  StatsPublisher(Stats::Scope& scope, TimeSource& time_source, 
-                 const CostCalculator& cost_calculator, double default_rtt_ms)
+  Observability(Stats::Scope& scope, TimeSource& time_source, 
+                const Cost& cost_calculator, double default_rtt_ms)
       : scope_(scope), time_source_(time_source), 
         cost_calculator_(cost_calculator), default_rtt_ms_(default_rtt_ms) {}
   
   /**
-   * Publish stats for admin interface visibility.
+   * Report host metrics for admin interface visibility.
    * Called after EWMA aggregation to update per-host metrics.
    */
-  void publishHostStats(const std::unordered_map<Upstream::HostConstSharedPtr, std::unique_ptr<GlobalHostStats>>& all_host_stats);
+  void report(const std::unordered_map<Upstream::HostConstSharedPtr, std::unique_ptr<GlobalHostStats>>& all_host_stats);
   
   /**
    * Create stats object for a new host.
@@ -58,7 +58,7 @@ public:
 private:
   Stats::Scope& scope_;
   TimeSource& time_source_;
-  [[maybe_unused]] const CostCalculator& cost_calculator_;
+  [[maybe_unused]] const Cost& cost_calculator_;
   [[maybe_unused]] const double default_rtt_ms_;
 };
 

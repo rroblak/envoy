@@ -9,8 +9,8 @@
 #include "source/extensions/load_balancing_policies/common/load_balancer_impl.h"
 #include "contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/source/ewma.h"
 #include "contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/source/host_data.h"
-#include "contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/source/cost_calculator.h"
-#include "contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/source/stats_publisher.h"
+#include "contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/source/cost.h"
+#include "contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/source/observability.h"
 #include "source/common/common/thread.h"
 #include "source/common/common/callback_impl.h"
 
@@ -42,7 +42,7 @@ class PeakEwmaTestPeer;
 
 class PeakEwmaLoadBalancerFactory;
 class PeakEwmaLoadBalancer;
-class CostCalculator;
+class Cost;
 struct GlobalHostStats;
 
 
@@ -105,8 +105,8 @@ private:
   Random::RandomGenerator& random_;
   
   // Business logic components
-  CostCalculator cost_calculator_;
-  StatsPublisher stats_publisher_;
+  Cost cost_;
+  Observability observability_;
   
   // Timer infrastructure for periodic EWMA calculation
   Event::Dispatcher& main_dispatcher_;
