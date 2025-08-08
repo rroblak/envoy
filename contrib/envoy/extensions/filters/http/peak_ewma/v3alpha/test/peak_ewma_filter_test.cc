@@ -173,7 +173,7 @@ TEST_F(PeakEwmaRttFilterTest, EncodeHeadersWithPeakEwmaStats) {
   }));
   
   // Create Peak EWMA host data for the mock host
-  auto peak_data = std::make_unique<LoadBalancingPolicies::PeakEwma::PeakEwmaHostLbPolicyData>();
+  auto peak_data = std::make_unique<LoadBalancingPolicies::PeakEwma::PeakEwmaHostLbPolicyData>(100);
   
   // Set the LB policy data on the mock host
   mock_host->setLbPolicyData(std::move(peak_data));

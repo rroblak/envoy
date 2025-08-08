@@ -121,6 +121,7 @@ private:
   
   // EWMA calculation constants
   const int64_t tau_nanos_;  // Decay time in nanoseconds
+  const size_t max_samples_;  // Configurable ring buffer size per host
 };
 
 } // namespace PeakEwma

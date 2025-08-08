@@ -9,7 +9,8 @@ namespace PeakEwma {
 
 class HostDataTest : public ::testing::Test {
 protected:
-  PeakEwmaHostLbPolicyData host_data_;
+  static constexpr size_t kTestMaxSamples = 100;  // Test with default buffer size
+  PeakEwmaHostLbPolicyData host_data_{kTestMaxSamples};
 };
 
 TEST_F(HostDataTest, InitialState) {
@@ -62,7 +63,7 @@ TEST_F(HostDataTest, RecordMultipleSamples) {
 
 TEST_F(HostDataTest, RingBufferWraparound) {
   // Fill buffer beyond capacity
-  const size_t total_samples = PeakEwmaHostLbPolicyData::kMaxSamples + 10;
+  const size_t total_samples = kTestMaxSamples + 10;
   
   for (size_t i = 0; i < total_samples; ++i) {
     host_data_.recordRttSample(i * 1.0, i * 1000);
@@ -73,8 +74,8 @@ TEST_F(HostDataTest, RingBufferWraparound) {
   EXPECT_EQ(range.second, total_samples);  // write_index continues incrementing
   
   // Verify latest samples overwrote old ones
-  // Sample at index 0 should be from iteration (kMaxSamples)
-  const size_t expected_value_at_0 = PeakEwmaHostLbPolicyData::kMaxSamples;
+  // Sample at index 0 should be from iteration (kTestMaxSamples)
+  const size_t expected_value_at_0 = kTestMaxSamples;
   EXPECT_EQ(host_data_.rtt_samples_[0].load(), expected_value_at_0 * 1.0);
   EXPECT_EQ(host_data_.timestamps_[0].load(), expected_value_at_0 * 1000);
 }
@@ -185,12 +186,12 @@ TEST_F(HostDataTest, EdgeCaseValues) {
 
 TEST_F(HostDataTest, ProcessingWithRingBufferWraparound) {
   // Fill buffer completely
-  for (size_t i = 0; i < PeakEwmaHostLbPolicyData::kMaxSamples; ++i) {
+  for (size_t i = 0; i < kTestMaxSamples; ++i) {
     host_data_.recordRttSample(i * 1.0, i * 1000);
   }
   
   // Process half the samples
-  const size_t half = PeakEwmaHostLbPolicyData::kMaxSamples / 2;
+  const size_t half = kTestMaxSamples / 2;
   host_data_.markSamplesProcessed(half);
   
   // Add more samples (causing wraparound)
@@ -201,11 +202,66 @@ TEST_F(HostDataTest, ProcessingWithRingBufferWraparound) {
   // Verify range calculation with wraparound
   auto range = host_data_.getNewSampleRange();
   EXPECT_EQ(range.first, half);
-  EXPECT_EQ(range.second, PeakEwmaHostLbPolicyData::kMaxSamples + 20);
+  EXPECT_EQ(range.second, kTestMaxSamples + 20);
   
   // The actual samples to process span across the wraparound
   size_t samples_to_process = range.second - range.first;
   EXPECT_EQ(samples_to_process, half + 20);
+}
+
+TEST_F(HostDataTest, ConfigurableBufferSizes) {
+  // Test different buffer sizes to verify max_samples_per_host functionality
+  
+  // Small buffer (10 samples)
+  {
+    PeakEwmaHostLbPolicyData small_buffer_host_data{10};
+    EXPECT_EQ(small_buffer_host_data.max_samples_, 10);
+    
+    // Fill small buffer
+    for (size_t i = 0; i < 15; ++i) {
+      small_buffer_host_data.recordRttSample(i * 1.0, i * 1000);
+    }
+    
+    // Verify wraparound at smaller buffer size
+    // Sample at index 0 should be from iteration 10 (overwrote initial 0)
+    EXPECT_EQ(small_buffer_host_data.rtt_samples_[0].load(), 10.0);
+    EXPECT_EQ(small_buffer_host_data.timestamps_[0].load(), 10000);
+  }
+  
+  // Large buffer (500 samples)
+  {
+    PeakEwmaHostLbPolicyData large_buffer_host_data{500};
+    EXPECT_EQ(large_buffer_host_data.max_samples_, 500);
+    
+    // Fill with many samples without wraparound
+    for (size_t i = 0; i < 300; ++i) {
+      large_buffer_host_data.recordRttSample(i * 2.0, i * 2000);
+    }
+    
+    // Verify no wraparound occurred - sample 0 should still be original
+    EXPECT_EQ(large_buffer_host_data.rtt_samples_[0].load(), 0.0);
+    EXPECT_EQ(large_buffer_host_data.timestamps_[0].load(), 0);
+    
+    // Verify last sample is correctly placed
+    EXPECT_EQ(large_buffer_host_data.rtt_samples_[299].load(), 598.0);
+    EXPECT_EQ(large_buffer_host_data.timestamps_[299].load(), 598000);
+  }
+  
+  // Edge case: single sample buffer
+  {
+    PeakEwmaHostLbPolicyData single_buffer_host_data{1};
+    EXPECT_EQ(single_buffer_host_data.max_samples_, 1);
+    
+    // Each new sample should overwrite the single slot
+    single_buffer_host_data.recordRttSample(1.0, 1000);
+    EXPECT_EQ(single_buffer_host_data.rtt_samples_[0].load(), 1.0);
+    
+    single_buffer_host_data.recordRttSample(2.0, 2000);
+    EXPECT_EQ(single_buffer_host_data.rtt_samples_[0].load(), 2.0);
+    
+    single_buffer_host_data.recordRttSample(3.0, 3000);
+    EXPECT_EQ(single_buffer_host_data.rtt_samples_[0].load(), 3.0);
+  }
 }
 
 } // namespace PeakEwma

@@ -5,6 +5,7 @@
 #include <atomic>
 #include <cstdint>
 #include <utility>
+#include <vector>
 
 namespace Envoy {
 namespace Extensions {
@@ -18,11 +19,15 @@ namespace PeakEwma {
  * for thread-safe access. Workers write samples, main thread processes them.
  */
 struct PeakEwmaHostLbPolicyData : public Upstream::HostLbPolicyData {
-  static constexpr size_t kMaxSamples = 100;  // ~1.6KB per host
+  // Constructor that accepts configurable buffer size
+  explicit PeakEwmaHostLbPolicyData(size_t max_samples);
+  
+  // Configurable buffer size (replaces kMaxSamples constant)
+  const size_t max_samples_;
   
   // Atomic ring buffer for RTT samples (lock-free writes from workers)
-  std::atomic<double> rtt_samples_[kMaxSamples];
-  std::atomic<uint64_t> timestamps_[kMaxSamples]; 
+  std::vector<std::atomic<double>> rtt_samples_;
+  std::vector<std::atomic<uint64_t>> timestamps_; 
   
   // Index management (atomic for thread safety)
   std::atomic<size_t> write_index_{0};           // Workers increment atomically

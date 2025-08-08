@@ -72,14 +72,15 @@ message PeakEwma {
   // Maximum RTT samples to buffer per host per worker thread before overwriting oldest samples.
   // This bounds memory usage while allowing burst traffic handling.
   //
-  // Higher values handle traffic bursts better but use more memory:
-  // - 1,000: Supports ~10K RPS with 100ms aggregation (~16KB per host per worker)
-  // - 10,000: Supports ~100K RPS with 100ms aggregation (~160KB per host per worker) 
-  // - 25,000: Supports ~250K RPS with 100ms aggregation (~400KB per host per worker)
+  // Buffer capacity formula: max_samples_per_host / 0.1s = RPS capacity per host per worker
+  // Memory formula: max_samples_per_host × num_hosts × num_workers × 16 bytes
   //
-  // Memory usage per worker = max_samples_per_host × num_hosts × 16 bytes
+  // Common values:
+  // - 1,000: Handles 10K RPS bursts, ~1.6MB for 50 hosts/2 workers (service mesh default)
+  // - 5,000: Handles 50K RPS bursts, ~8MB for 50 hosts/2 workers (API gateway)  
+  // - 25,000: Handles 250K RPS bursts, ~40MB for 50 hosts/2 workers (high-traffic edge)
   //
-  // If not specified, defaults to 25,000 samples per host per worker.
+  // If not specified, defaults to 1,000 samples per host per worker.
   google.protobuf.UInt32Value max_samples_per_host = 3;
 
   // Default RTT value to use for hosts that don't have measured RTT yet.

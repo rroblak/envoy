@@ -49,7 +49,9 @@ PeakEwmaLoadBalancer::PeakEwmaLoadBalancer(
           std::chrono::milliseconds(100)),
       tau_nanos_(config_proto_.has_decay_time() ? 
           DurationUtil::durationToMilliseconds(config_proto_.decay_time()) * 1000000LL :
-          kDefaultDecayTimeSeconds * 1000000000LL) {
+          kDefaultDecayTimeSeconds * 1000000000LL),
+      max_samples_(config_proto_.has_max_samples_per_host() ? 
+          config_proto_.max_samples_per_host().value() : 1000) {
   
   // Add PeakEwmaHostLbPolicyData to all existing hosts
   for (const auto& host_set : priority_set_.hostSetsPerPriority()) {
@@ -98,7 +100,7 @@ PeakEwmaLoadBalancer::~PeakEwmaLoadBalancer() {
 void PeakEwmaLoadBalancer::addPeakEwmaLbPolicyDataToHosts(const Upstream::HostVector& hosts) {
   for (const auto& host_ptr : hosts) {
     if (!host_ptr->lbPolicyData().has_value()) {
-      host_ptr->setLbPolicyData(std::make_unique<PeakEwmaHostLbPolicyData>());
+      host_ptr->setLbPolicyData(std::make_unique<PeakEwmaHostLbPolicyData>(max_samples_));
     }
   }
 }
@@ -269,7 +271,7 @@ void PeakEwmaLoadBalancer::processHostSamples(Upstream::HostConstSharedPtr /* ho
     num_new_samples = current_write - last_processed;
   } else {
     // Write index wrapped around
-    num_new_samples = (PeakEwmaHostLbPolicyData::kMaxSamples - last_processed) + current_write;
+    num_new_samples = (data->max_samples_ - last_processed) + current_write;
   }
   
   if (num_new_samples == 0) return;
@@ -282,7 +284,7 @@ void PeakEwmaLoadBalancer::processHostSamples(Upstream::HostConstSharedPtr /* ho
   // Process all new samples in chronological order
   size_t processed_index = last_processed;
   for (size_t i = 0; i < num_new_samples; ++i) {
-    size_t ring_index = processed_index % PeakEwmaHostLbPolicyData::kMaxSamples;
+    size_t ring_index = processed_index % data->max_samples_;
     
     double rtt_ms = data->rtt_samples_[ring_index].load();
     uint64_t timestamp_ns = data->timestamps_[ring_index].load();

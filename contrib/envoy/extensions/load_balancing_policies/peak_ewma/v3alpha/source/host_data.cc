@@ -5,8 +5,13 @@ namespace Extensions {
 namespace LoadBalancingPolicies {
 namespace PeakEwma {
 
+PeakEwmaHostLbPolicyData::PeakEwmaHostLbPolicyData(size_t max_samples)
+    : max_samples_(max_samples), rtt_samples_(max_samples), timestamps_(max_samples) {
+  // Vectors are initialized with max_samples atomic elements, each default-initialized to 0
+}
+
 void PeakEwmaHostLbPolicyData::recordRttSample(double rtt_ms, uint64_t timestamp_ns) {
-  size_t index = write_index_.fetch_add(1) % kMaxSamples;  // Atomic increment
+  size_t index = write_index_.fetch_add(1) % max_samples_;  // Use dynamic size
   rtt_samples_[index].store(rtt_ms);
   timestamps_[index].store(timestamp_ns);
 }
