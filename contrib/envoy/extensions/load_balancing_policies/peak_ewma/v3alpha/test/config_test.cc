@@ -115,6 +115,7 @@ TEST_F(PeakEwmaConfigTest, LoadConfigWithCustomValues) {
   // Create config with custom values
   envoy::extensions::load_balancing_policies::peak_ewma::v3alpha::PeakEwma proto_config;
   proto_config.mutable_decay_time()->set_seconds(5);  // 5 second decay time
+  proto_config.mutable_penalty_value()->set_value(750000.0);  // Custom penalty value
   
   auto result = factory.loadConfig(context, proto_config);
   EXPECT_TRUE(result.ok());
@@ -122,6 +123,8 @@ TEST_F(PeakEwmaConfigTest, LoadConfigWithCustomValues) {
   const auto* config = dynamic_cast<const TypedPeakEwmaLbConfig*>(result.value().get());
   EXPECT_NE(config, nullptr);
   EXPECT_EQ(config->lb_config_.decay_time().seconds(), 5);
+  EXPECT_TRUE(config->lb_config_.has_penalty_value());
+  EXPECT_EQ(config->lb_config_.penalty_value().value(), 750000.0);
 }
 
 TEST_F(PeakEwmaConfigTest, CreateThreadAwareLoadBalancer) {

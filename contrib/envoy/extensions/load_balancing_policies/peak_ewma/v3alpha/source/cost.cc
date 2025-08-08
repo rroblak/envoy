@@ -16,7 +16,7 @@ double Cost::compute(double rtt_ewma_ms, double active_requests, double default_
   
   if (!has_rtt && has_requests) {
     // Host has requests but no RTT data - likely failing, penalize heavily
-    return kPenaltyValue + active_requests;
+    return penalty_value_ + active_requests;
   } else if (has_rtt) {
     // Standard Peak EWMA formula: cost = latency * load
     return rtt_ewma_ms * (active_requests + 1.0);

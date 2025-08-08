@@ -16,8 +16,11 @@ namespace PeakEwma {
  */
 class Cost {
 public:
-  // High penalty for hosts with requests but no RTT data (likely failing)
-  static constexpr double kPenaltyValue = 1000000.0;
+  /**
+   * Constructor with configurable penalty value.
+   * @param penalty_value Cost penalty for hosts with no RTT data
+   */
+  explicit Cost(double penalty_value = 1000000.0) : penalty_value_(penalty_value) {}
   
   /**
    * Compute cost for host selection using Peak EWMA algorithm.
@@ -29,6 +32,9 @@ public:
    * @return Computed cost for P2C selection (lower is better)
    */
   double compute(double rtt_ewma_ms, double active_requests, double default_rtt_ms) const;
+
+private:
+  const double penalty_value_;
 };
 
 /**

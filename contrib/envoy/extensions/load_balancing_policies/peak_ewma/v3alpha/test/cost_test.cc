@@ -9,8 +9,9 @@ namespace PeakEwma {
 
 class CostTest : public ::testing::Test {
 protected:
-  Cost cost_;
+  Cost cost_;  // Uses default penalty value (1000000.0)
   static constexpr double kDefaultRtt = 10.0;  // 10ms default
+  static constexpr double kDefaultPenalty = 1000000.0;  // Default penalty value
 };
 
 TEST_F(CostTest, ComputesCostWithRttAndRequests) {
@@ -28,7 +29,7 @@ TEST_F(CostTest, ComputesCostWithRttAndZeroRequests) {
 TEST_F(CostTest, ComputesCostWithoutRttButWithRequests) {
   // No RTT, but requests active: penalty + requests
   double cost = cost_.compute(0.0, 3.0, kDefaultRtt);
-  EXPECT_EQ(cost, Cost::kPenaltyValue + 3.0);
+  EXPECT_EQ(cost, kDefaultPenalty + 3.0);
 }
 
 TEST_F(CostTest, ComputesCostWithoutRttAndZeroRequests) {
@@ -49,6 +50,20 @@ TEST_F(CostTest, PrefersFreshRttOverDefault) {
   double expected = 50.0 * (2.0 + 1.0);  // 150.0
   EXPECT_EQ(cost_with_rtt, expected);
   EXPECT_NE(cost_with_rtt, kDefaultRtt * (2.0 + 1.0));  // Should not use default
+}
+
+TEST_F(CostTest, ConfigurablePenaltyValue) {
+  // Test custom penalty value
+  const double custom_penalty = 500000.0;
+  Cost cost_with_custom_penalty(custom_penalty);
+  
+  double cost = cost_with_custom_penalty.compute(0.0, 2.0, kDefaultRtt);
+  EXPECT_EQ(cost, custom_penalty + 2.0);
+  
+  // Verify different from default penalty
+  double cost_with_default = cost_.compute(0.0, 2.0, kDefaultRtt);
+  EXPECT_NE(cost, cost_with_default);
+  EXPECT_EQ(cost_with_default, kDefaultPenalty + 2.0);
 }
 
 } // namespace PeakEwma

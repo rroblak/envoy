@@ -38,7 +38,7 @@ PeakEwmaLoadBalancer::PeakEwmaLoadBalancer(
       priority_set_(priority_set),
       config_proto_(config),
       random_(random),
-      cost_(),
+      cost_(config.has_penalty_value() ? config.penalty_value().value() : 1000000.0),
       observability_(cluster_info.statsScope(), time_source, cost_, 
                       config.has_default_rtt() ?
                           DurationUtil::durationToMilliseconds(config.default_rtt()) :

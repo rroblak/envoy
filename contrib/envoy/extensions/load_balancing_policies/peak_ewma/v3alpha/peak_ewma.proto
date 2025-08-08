@@ -98,4 +98,25 @@ message PeakEwma {
   // If not specified, defaults to 10 milliseconds.
   google.protobuf.Duration default_rtt = 4;
 
+  // Penalty cost assigned to hosts that cannot provide valid cost calculations.
+  // This is used when a host has no RTT measurements or is unhealthy, ensuring
+  // the Power of Two Choices algorithm will prefer hosts with known performance.
+  //
+  // **IMPORTANT: You probably should not change this value.** The default value
+  // has been chosen to ensure proper load balancing behavior across a wide range
+  // of scenarios. Modifying this value can lead to unexpected load distribution
+  // patterns and should only be done with careful consideration and testing.
+  //
+  // The penalty should be significantly higher than any realistic RTT-based cost
+  // to ensure hosts with unknown performance are strongly deprioritized while
+  // still allowing them to receive traffic if no better alternatives exist.
+  //
+  // Typical considerations for modification:
+  // - If your environment has extremely high RTT values (>1000ms), you might
+  //   consider increasing the penalty to maintain proper host selection
+  // - If you have specific requirements for handling unknown hosts differently
+  //
+  // If not specified, defaults to 1,000,000.0 (1 million).
+  google.protobuf.DoubleValue penalty_value = 5;
+
 }
