@@ -38,7 +38,6 @@ envoy_cc_library(
         "//source/common/upstream:upstream_lib",
         "//source/extensions/load_balancing_policies/common:factory_base",
         "//source/extensions/load_balancing_policies/common:load_balancer_lib",
-        "@envoy_api//contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha:pkg_cc_proto",
     ],
 )
 
@@ -51,6 +50,5 @@ envoy_cc_contrib_extension(
         "//contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha:pkg_cc_proto",
         "//envoy/registry",
         "//source/extensions/load_balancing_policies/common:factory_base",
-        "@envoy_api//contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha:pkg_cc_proto",
     ],
 )
