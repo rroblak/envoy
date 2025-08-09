@@ -1,8 +1,10 @@
+.. _extension_envoy.load_balancing_policies.peak_ewma:
+.. _extension_envoy.filters.http.peak_ewma:
+
 Peak EWMA Load Balancer
 ========================
 
 * This load balancer should be configured with the type URL ``type.googleapis.com/envoy.extensions.load_balancing_policies.peak_ewma.v3alpha.PeakEwma``.
-* :ref:`v3 API reference <envoy_v3_api_msg_extensions.load_balancing_policies.peak_ewma.v3alpha.PeakEwma>`
 
 .. note::
 
@@ -194,8 +196,5 @@ The load balancer maintains constant selection time regardless of cluster size.
 API Reference
 -------------
 
-.. toctree::
-  :glob:
-  :maxdepth: 2
-
-  ../../../../../extensions/load_balancing_policies/peak_ewma/v3alpha/*
+The Peak EWMA load balancing policy is configured using the 
+``envoy.extensions.load_balancing_policies.peak_ewma.v3alpha.PeakEwma`` proto message.
