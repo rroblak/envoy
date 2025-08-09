@@ -88,5 +88,4 @@ message PeakEwma {
   //
   // If not specified, defaults to 1,000,000.0 (1 million).
   google.protobuf.DoubleValue penalty_value = 5;
-
 }

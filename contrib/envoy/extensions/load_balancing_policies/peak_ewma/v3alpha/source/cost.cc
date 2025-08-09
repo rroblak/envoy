@@ -10,7 +10,7 @@ namespace PeakEwma {
 double Cost::compute(double rtt_ewma_ms, double active_requests, double default_rtt_ms) const {
   const bool has_rtt = (rtt_ewma_ms > 0.0);
   const bool has_requests = (active_requests > 0.0);
-  
+
   if (!has_rtt && has_requests) {
     // Host has requests but no RTT data - likely failing, penalize heavily
     return penalty_value_ + active_requests;
@@ -22,7 +22,6 @@ double Cost::compute(double rtt_ewma_ms, double active_requests, double default_
     return default_rtt_ms * (active_requests + 1.0);
   }
 }
-
 
 } // namespace PeakEwma
 } // namespace LoadBalancingPolicies

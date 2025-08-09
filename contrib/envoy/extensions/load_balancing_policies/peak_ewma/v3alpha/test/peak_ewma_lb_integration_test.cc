@@ -1,5 +1,3 @@
-#include "contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/source/peak_ewma_lb.h"
-
 #include "source/common/network/address_impl.h"
 
 #include "test/common/stats/stat_test_utility.h"
@@ -7,9 +5,10 @@
 #include "test/mocks/event/mocks.h"
 #include "test/mocks/runtime/mocks.h"
 #include "test/mocks/upstream/cluster_info.h"
-#include "test/mocks/upstream/priority_set.h"
 #include "test/mocks/upstream/host.h"
+#include "test/mocks/upstream/priority_set.h"
 
+#include "contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/source/peak_ewma_lb.h"
 #include "gtest/gtest.h"
 
 using testing::NiceMock;
@@ -26,12 +25,12 @@ namespace PeakEwma {
 class PeakEwmaLoadBalancerIntegrationTest : public ::testing::Test {
 public:
   PeakEwmaLoadBalancerIntegrationTest()
-      : stat_names_(store_.symbolTable()),
-        stats_(stat_names_, *store_.rootScope()) {
+      : stat_names_(store_.symbolTable()), stats_(stat_names_, *store_.rootScope()) {
 
     // Create 3 real host implementations to avoid mock complexity
     for (int i = 0; i < 3; ++i) {
-      auto address = std::make_shared<Network::Address::Ipv4Instance>("10.0.0." + std::to_string(i + 1), 0);
+      auto address =
+          std::make_shared<Network::Address::Ipv4Instance>("10.0.0." + std::to_string(i + 1), 0);
       auto host = std::make_shared<testing::NiceMock<Upstream::MockHost>>();
       ON_CALL(*host, address()).WillByDefault(Return(address));
       hosts_.emplace_back(host);
@@ -43,7 +42,8 @@ public:
     host_set_->hosts_ = hosts_;
     host_set_->healthy_hosts_ = hosts_;
 
-    ON_CALL(priority_set_, hostSetsPerPriority()).WillByDefault(ReturnRef(priority_set_.host_sets_));
+    ON_CALL(priority_set_, hostSetsPerPriority())
+        .WillByDefault(ReturnRef(priority_set_.host_sets_));
     ON_CALL(*cluster_info_, statsScope()).WillByDefault(ReturnRef(*store_.rootScope()));
     ON_CALL(time_source_, monotonicTime())
         .WillByDefault(Return(MonotonicTime(std::chrono::milliseconds(1234567890))));
@@ -51,9 +51,9 @@ public:
     envoy::extensions::load_balancing_policies::peak_ewma::v3alpha::PeakEwma config;
     config.mutable_decay_time()->set_seconds(10);
 
-    lb_ = std::make_unique<PeakEwmaLoadBalancer>(
-        priority_set_, nullptr, stats_, runtime_, random_, 50,
-        *cluster_info_, time_source_, config, dispatcher_);
+    lb_ = std::make_unique<PeakEwmaLoadBalancer>(priority_set_, nullptr, stats_, runtime_, random_,
+                                                 50, *cluster_info_, time_source_, config,
+                                                 dispatcher_);
   }
 
 protected:
@@ -100,7 +100,7 @@ TEST_F(PeakEwmaLoadBalancerIntegrationTest, NoHosts) {
 // Test interface implementation
 TEST_F(PeakEwmaLoadBalancerIntegrationTest, PeekAnotherHost) {
   auto result = lb_->peekAnotherHost(nullptr);
-  EXPECT_EQ(result, nullptr);  // Peak EWMA doesn't support peeking
+  EXPECT_EQ(result, nullptr); // Peak EWMA doesn't support peeking
 }
 
 } // namespace PeakEwma

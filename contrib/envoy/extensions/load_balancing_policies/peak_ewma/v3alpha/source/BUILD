@@ -14,30 +14,31 @@ envoy_cc_library(
     srcs = [
         "cost.cc",
         "host_data.cc",
-        "peak_ewma_lb.cc",
         "observability.cc",
+        "peak_ewma_lb.cc",
     ],
     hdrs = [
         "cost.h",
         "host_data.h",
-        "peak_ewma_lb.h",
         "observability.h",
+        "peak_ewma_lb.h",
     ],
     repository = "@envoy",
     visibility = [
-        "//contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/test:__pkg__",
         "//contrib/envoy/extensions/filters/http/peak_ewma/v3alpha/source:__pkg__",
         "//contrib/envoy/extensions/filters/http/peak_ewma/v3alpha/test:__pkg__",
+        "//contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/test:__pkg__",
         "//test/extensions/load_balancing_policies/peak_ewma:__pkg__",
     ],
     deps = [
+        "//contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha:pkg_cc_proto",
         "//source/common/common:utility_lib",
         "//source/common/config:utility_lib",
         "//source/common/runtime:runtime_lib",
         "//source/common/upstream:upstream_lib",
         "//source/extensions/load_balancing_policies/common:factory_base",
         "//source/extensions/load_balancing_policies/common:load_balancer_lib",
-        "//contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha:pkg_cc_proto",
+        "@envoy_api//contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha:pkg_cc_proto",
     ],
 )
 
@@ -47,8 +48,9 @@ envoy_cc_contrib_extension(
     hdrs = ["config.h"],
     deps = [
         ":peak_ewma_lb_lib",
+        "//contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha:pkg_cc_proto",
         "//envoy/registry",
         "//source/extensions/load_balancing_policies/common:factory_base",
-        "//contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha:pkg_cc_proto",
+        "@envoy_api//contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha:pkg_cc_proto",
     ],
 )

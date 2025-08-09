@@ -22,20 +22,20 @@ envoy_cc_test(
     ],
 )
 
-
 envoy_cc_test(
     name = "config_test",
     srcs = ["config_test.cc"],
     deps = [
-        "//contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/source:peak_ewma_lb_lib",
-        "//contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/source:config",
         "//contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha:pkg_cc_proto",
+        "//contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/source:config",
+        "//contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/source:peak_ewma_lb_lib",
         "//source/common/protobuf:utility_lib",
         "//test/common/stats:stat_test_utility_lib",
         "//test/mocks/runtime:runtime_mocks",
         "//test/mocks/server:factory_context_mocks",
         "//test/mocks/upstream:upstream_mocks",
         "//test/test_common:utility_lib",
+        "@envoy_api//contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha:pkg_cc_proto",
     ],
 )
 
@@ -46,7 +46,6 @@ envoy_cc_test(
         "//contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/source:peak_ewma_lb_lib",
     ],
 )
-
 
 envoy_cc_test(
     name = "host_data_test",

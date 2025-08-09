@@ -75,7 +75,7 @@ public:
   void runBasicLoadBalancing() {
     // Send multiple requests and verify they are distributed across upstreams
     std::set<int> used_upstreams;
-    
+
     for (uint64_t i = 0; i < 10; i++) {
       codec_client_ = makeHttpConnection(lookupPort("http"));
 
@@ -131,7 +131,7 @@ public:
 
     // Now send more requests and check if the faster upstreams (0, 2) are preferred
     std::map<int, int> upstream_counts;
-    
+
     for (int i = 0; i < 20; i++) {
       codec_client_ = makeHttpConnection(lookupPort("http"));
 
@@ -161,10 +161,10 @@ public:
     int slow_upstream_requests = upstream_counts[1];
     int total_requests = 20;
     double slow_upstream_ratio = static_cast<double>(slow_upstream_requests) / total_requests;
-    
-    EXPECT_LT(slow_upstream_ratio, 0.5) 
-        << "Should reduce traffic to slower upstream. Got " 
-        << slow_upstream_requests << "/" << total_requests << " requests";
+
+    EXPECT_LT(slow_upstream_ratio, 0.5)
+        << "Should reduce traffic to slower upstream. Got " << slow_upstream_requests << "/"
+        << total_requests << " requests";
   }
 
   void runConfigValidation() {

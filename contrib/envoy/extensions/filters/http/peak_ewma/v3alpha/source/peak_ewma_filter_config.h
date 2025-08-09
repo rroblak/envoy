@@ -1,9 +1,9 @@
 #pragma once
 
+#include "source/extensions/filters/http/common/factory_base.h"
+
 #include "contrib/envoy/extensions/filters/http/peak_ewma/v3alpha/peak_ewma.pb.h"
 #include "contrib/envoy/extensions/filters/http/peak_ewma/v3alpha/peak_ewma.pb.validate.h"
-
-#include "source/extensions/filters/http/common/factory_base.h"
 
 namespace Envoy {
 namespace Extensions {
@@ -19,8 +19,7 @@ public:
 private:
   Http::FilterFactoryCb createFilterFactoryFromProtoTyped(
       const envoy::extensions::filters::http::peak_ewma::v3alpha::PeakEwmaConfig& proto_config,
-      const std::string& stats_prefix,
-      Server::Configuration::FactoryContext& context) override;
+      const std::string& stats_prefix, Server::Configuration::FactoryContext& context) override;
 };
 
 } // namespace PeakEwma

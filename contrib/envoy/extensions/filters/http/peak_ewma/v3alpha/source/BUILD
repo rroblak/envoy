@@ -19,11 +19,11 @@ envoy_cc_library(
     ],
     repository = "@envoy",
     deps = [
+        "//contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/source:peak_ewma_lb_lib",
         "//envoy/http:filter_interface",
-        "//source/common/common:utility_lib", 
+        "//source/common/common:utility_lib",
         "//source/common/http:utility_lib",
         "//source/extensions/filters/http/common:pass_through_filter_lib",
-        "//contrib/envoy/extensions/load_balancing_policies/peak_ewma/v3alpha/source:peak_ewma_lb_lib",
     ],
 )
 
@@ -36,5 +36,6 @@ envoy_cc_contrib_extension(
         "//contrib/envoy/extensions/filters/http/peak_ewma/v3alpha:pkg_cc_proto",
         "//envoy/registry",
         "//source/extensions/filters/http/common:factory_base_lib",
+        "@envoy_api//contrib/envoy/extensions/filters/http/peak_ewma/v3alpha:pkg_cc_proto",
     ],
 )

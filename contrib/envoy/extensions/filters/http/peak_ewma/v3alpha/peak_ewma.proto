@@ -14,7 +14,7 @@ option (xds.annotations.v3.file_status).work_in_progress = true;
 // [#extension: envoy.filters.http.peak_ewma]
 message PeakEwmaConfig {
   option (xds.annotations.v3.message_status).work_in_progress = true;
-  
+
   // Currently no configuration options are needed.
   // This message exists to provide a proper protobuf type for the filter.
 }

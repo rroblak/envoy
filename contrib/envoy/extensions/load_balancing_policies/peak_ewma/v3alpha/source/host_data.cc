@@ -11,7 +11,7 @@ PeakEwmaHostLbPolicyData::PeakEwmaHostLbPolicyData(size_t max_samples)
 }
 
 void PeakEwmaHostLbPolicyData::recordRttSample(double rtt_ms, uint64_t timestamp_ns) {
-  size_t index = write_index_.fetch_add(1) % max_samples_;  // Use dynamic size
+  size_t index = write_index_.fetch_add(1) % max_samples_; // Use dynamic size
   rtt_samples_[index].store(rtt_ms);
   timestamps_[index].store(timestamp_ns);
 }
